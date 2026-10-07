@@ -1,3 +1,5 @@
+
+
 # 操作系统实验报告
 
 ## 实验基本信息
@@ -34,6 +36,9 @@
 **说明：**
 - AI 编程工具：Cline，运行在 VS Code 的 WSL 远程窗口中。
 - 底层模型：DeepSeek-v4-flash，通过 API Key 接入。
+- 交叉编译器：riscv64-unknown-elf-gcc 13.2.0。
+
+- 模拟器：qemu-system-riscv64 4.1.1（内置 OpenSBI v0.4）。
 
 ---
 
@@ -89,16 +94,21 @@
 **调试过程**：
 1. `make debug` 启动 QEMU 并暂停。
 2. `make gdb` 连接，停在 `0x1000`。
-3. `x/10i $pc` 查看复位指令。
-4. `b *0x80200000`，`c` 命中 `kern_entry`。
-5. `info registers`：`a0=0`，`a1=0x87e00000`，`sp=0x80046eb0`，`pc=0x80200000`。
-6. `si` 执行 `la` 后 `sp=0x80203000`；再 `si` 后 `pc=0x8020000a <kern_init>`。
+3. `x/10i $pc` 查看复位指令，共 5 条有效指令。
+4. `info registers`：复位现场 `pc=0x1000`、`sp=0`、`a0=0`、`a1=0`。
+5. `b *0x80200000`，`c` 命中 `kern_entry`。此时寄存器：`a0=0`，`a1=0x82200000`（DTB），`sp=0x8001bd80`，`pc=0x80200000`。
+6. `si` 执行 `la` 后：`sp=0x80203000`，`pc=0x80200004`。
+7. 再 `si` 后：`pc=0x8020000a <kern_init>`，`sp`、`a0`、`a1` 未被破坏。
 
 **问题回答**：
-RISC-V 加电后最初指令位于 **`0x1000`**，完成：
-- `csrr a0, mhartid` 读取 hart ID；
-- `ld a1, 32(t0)` 加载 DTB 地址；
-- `jr t0` 跳转到 OpenSBI（`0x80000000`）。
+RISC-V 加电后最初指令位于 **`0x1000`**（复位地址）。QEMU 4.1.1 下复位向量共 5 条：
+- `auipc t0, 0x0`：取得复位桩自身基址 `0x1000`；
+- `addi a1, t0, 32`：a1 = `0x1020`，指向 ROM 中 DTB 地址的存放位置；
+- `csrr a0, mhartid`：读取 hart ID 存入 a0；
+- `ld t0, 24(t0)`：从 `0x1018` 取出下一级固件入口（OpenSBI 的 `0x80000000`）；
+- `jr t0`：跳转到 OpenSBI。
+
+
 
 ---
 
@@ -121,28 +131,28 @@ RISC-V 加电后最初指令位于 **`0x1000`**，完成：
 
 1. 向 Cline 提问后，Cline 读取 `entry.S`、`kernel.ld`、反汇编文件，给出伪指令展开、栈地址、寄存器保留等分析。
 2. 本人核对反汇编，确认 `la` 展开为 `auipc+addi`，`tail` 松弛为 `j kern_init`。
-3. 整理为练习1答案，保存为 `会话记录/lab1_exercise1.md`。
+3. 整理练习1答案，会话记录保存为 `会话记录/lab1_exercise1.md`。
 
 #### 练习2 提示词
 
 ```
 我正在做 lab1 练习2：用 GDB 跟踪 QEMU 从加电到跳转 0x80200000 的过程。以下是我的观察结果：
 
-1. GDB 连上后停在 0x1000，反汇编显示：
+1. GDB 连上后停在 0x1000，反汇编显示（QEMU 4.1.1）：
    auipc t0,0x0
-   addi a2,t0,40
+   addi a1,t0,32
    csrr a0,mhartid
-   ld a1,32(t0)
    ld t0,24(t0)
    jr t0
 2. 在 0x80200000 设断点后继续运行，命中 kern_entry。
-   此时寄存器：a0=0（hartid），a1=0x87e00000（DTB），sp=0x80046eb0，pc=0x80200000。
+   此时寄存器：a0=0（hartid），a1=0x82200000（DTB），sp=0x8001bd80，pc=0x80200000。
 3. 单步执行 la sp, bootstacktop 后，sp=0x80203000。
 4. 再单步执行 tail kern_init 后，pc=0x8020000a <kern_init>。
 
 请帮我：
 1. 解释 0x1000 处这几条指令各自完成了什么功能。
 2. 解释为什么 OpenSBI 跳转到内核时 sp 是无效的，以及 entry.S 为什么必须自己设栈。
+
 ```
 
 **迭代过程：**
@@ -150,22 +160,8 @@ RISC-V 加电后最初指令位于 **`0x1000`**，完成：
 1. 本人手动操作 GDB，记录上述 4 条观察结果。
 2. 将观察结果发给 Cline，请求解释 `0x1000` 复位向量与 `sp` 无效原因。
 3. Cline 给出完整分析，整理为 `会话记录/lab1_exercise2.md`。
-4. 补充说明：Makefile 中 `-device loader` 改为 `-kernel`、GDB 命令序列，由本人与Cline讨论后完成。
+4. Makefile 中 `-device loader` 改为 `-kernel`、GDB 命令序列，由本人与Cline讨论后完成
 
-#### 报告生成提示词
-
-```
-请根据当前项目 /home/sxz/lab1 的代码，以及 会话记录/ 目录下的两份会话记录，生成一份 lab1 实验报告初稿，保存为 lab1_report.md。
-要求：整体逻辑线、核心模块理解、知识点对照、未覆盖知识点、练习解答，以文本说明为主，言简意赅。
-```
-
-**迭代过程：**
-
-1. Cline 生成报告初稿，包含代码事实、反汇编数据、GDB 观察结果。
-2. 本人审阅后精简，去掉冗余分析，保留核心结论。
-3. 按老师模板调整结构，补充实验环境、AI 工具、测试与验证等章节。
-
----
 
 ## 五、测试与验证
 
@@ -179,7 +175,7 @@ $ make
 riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img
 
 $ make qemu
-OpenSBI v1.3
+OpenSBI v0.4
 ...
 (THU.CST) os is loading ...
 ```
@@ -207,7 +203,6 @@ OpenSBI v1.3
 | 固定加载地址 0x80200000 | 内存布局 | 无 MMU、无虚拟地址 |
 | `ecall` 调 SBI | 系统调用/特权级 | 内核→固件，非用户→内核 |
 | `printfmt` 回调 | 设备无关 I/O | 无缓冲、无中断驱动 |
-
 **OS 原理中重要但本实验未覆盖的知识点：**
 - 中断/异常处理（trap 框架）
 - 时钟中断与抢占
@@ -218,6 +213,7 @@ OpenSBI v1.3
 - 设备驱动与中断 I/O
 - 并发与同步
 - 文件系统与持久存储
+
 
 ### AI 协作开发的经验
 
