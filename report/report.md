@@ -161,7 +161,7 @@ RISC-V 加电后最初指令位于 **`0x1000`**（复位地址）。QEMU 4.1.1 �
 2. 将观察结果发给 Cline，请求解释 `0x1000` 复位向量与 `sp` 无效原因。
 3. Cline 给出完整分析，整理为 `会话记录/lab1_exercise2.md`。
 4. Makefile 中 `-device loader` 改为 `-kernel`、GDB 命令序列，由本人与Cline讨论后完成
-
+---
 
 ## 五、测试与验证
 
