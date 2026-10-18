@@ -29,7 +29,7 @@ uintptr_t satp_physical;
 // physical memory management
 const struct pmm_manager *pmm_manager;
 
-
+static void page_init(void);
 static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
@@ -61,8 +61,68 @@ size_t nr_free_pages(void) {
     return pmm_manager->nr_free_pages();
 }
 
-//lab2 function1 YOUR CODE
+//lab2 function1 2412896
+/* page_init - 根据 DTB 内存信息建立 Page 描述符数组，并把可用完整页交给 PMM */
+static void page_init(void) {
+    /* 1. PADDR() 依赖 va_pa_offset，必须先设置 */
+    va_pa_offset = PHYSICAL_MEMORY_OFFSET;
 
+    /* 2. 从 DTB 获取物理内存范围 */
+    uint64_t mem_base = get_memory_base();
+    uint64_t mem_size = get_memory_size();
+    if (mem_base == 0 || mem_size == 0) {
+        panic("page_init: invalid DTB memory info (base=0x%lx, size=0x%lx)",
+              (unsigned long)mem_base, (unsigned long)mem_size);
+    }
+    uint64_t mem_end = mem_base + mem_size;
+
+    /* 3. 可管理物理页号上界（不含）：npage = PPN(mem_base + mem_size) */
+    npage = PPN(mem_end);
+    if (npage <= nbase) {
+        panic("page_init: npage (%lu) <= nbase (%lu)",
+              (unsigned long)npage, (unsigned long)nbase);
+    }
+
+    /* 4. Page 描述符数组放在内核 end 之后，并按页对齐 */
+    extern char end[];
+    pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
+    size_t page_count = npage - nbase;
+
+    /* 5. 所有描述符先初始化为 reserved，避免未布局的页被提前分配 */
+    for (size_t i = 0; i < page_count; i++) {
+        pages[i].flags = 0;
+        pages[i].ref = 0;
+        pages[i].property = 0;
+        SetPageReserved(&pages[i]);
+    }
+
+    /* 6. 计算描述符数组末尾的物理地址，并向上按页对齐得到空闲区起点 */
+    uintptr_t pages_end_va = (uintptr_t)pages + page_count * sizeof(struct Page);
+    uintptr_t pages_end_pa = PADDR(pages_end_va);
+
+    if (pages_end_pa > mem_end) {
+        panic("page_init: Page array exceeds physical memory "
+              "(pages_end_pa=0x%lx, mem_end=0x%lx)",
+              (unsigned long)pages_end_pa, (unsigned long)mem_end);
+    }
+
+    uintptr_t free_start_pa = ROUNDUP(pages_end_pa, PGSIZE);
+    uintptr_t free_end_pa   = ROUNDDOWN((uintptr_t)mem_end, PGSIZE);
+
+    /* 7. 打印 physical memory map 及当前分配器名称 */
+    cprintf("physical memory map:\n");
+    cprintf("  memory: 0x%016lx, [0x%016lx, 0x%016lx].\n",
+            (unsigned long)mem_base,
+            (unsigned long)mem_base,
+            (unsigned long)(mem_end - 1));
+    cprintf("  allocator: %s\n", pmm_manager->name);
+
+    /* 8. 只有存在完整空闲页时才注册给底层 PMM */
+    if (free_start_pa < free_end_pa) {
+        size_t n = (free_end_pa - free_start_pa) / PGSIZE;
+        init_memmap(pa2page(free_start_pa), n);
+    }
+}
 /* pmm_init - initialize the physical memory management */
 void pmm_init(void) {
     // We need to alloc/free the physical memory (granularity is 4KB or other size).
