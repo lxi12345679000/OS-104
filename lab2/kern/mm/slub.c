@@ -33,7 +33,7 @@ static void slub_grow(struct kmem_cache *cache) {
     struct Page *page = alloc_pages(1);
     if (page == NULL) return;
 
-uintptr_t page_va = page2pa(page) + va_pa_offset;
+uintptr_t page_va = page2pa(page) + va_pa_offset;8
     size_t obj_size = sizeof(struct slub_obj_head) + cache->size;
     size_t nr_objs = PGSIZE / obj_size;
     
