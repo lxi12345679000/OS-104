@@ -64,13 +64,13 @@ best_fit_alloc_pages(size_t n) {
     }
 
     if (min_page != NULL) {
-        list_entry_t *le_to_del = &(min_page->page_link);
-        list_del(le_to_del);
+        list_entry_t *prev = list_prev(&(min_page->page_link)); // 1. 先保存前驱节点
+        list_del(&(min_page->page_link));                       // 2. 从链表摘除
         if (min_page->property > n) {
             struct Page *p = min_page + n;
             p->property = min_page->property - n;
             SetPageProperty(p);
-            list_add_before(le_to_del, &(p->page_link));
+            list_add(prev, &(p->page_link));                    // 3. 把剩余块插到前驱后面
         }
         nr_free -= n;
         ClearPageProperty(min_page);

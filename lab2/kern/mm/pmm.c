@@ -10,6 +10,8 @@
 #include <string.h>
 #include <riscv.h>
 #include <dtb.h>
+#include <buddy_pmm.h>
+#include <slub.h>
 
 // virtual address of physical page array
 struct Page *pages;
@@ -34,7 +36,11 @@ static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
-    pmm_manager = &default_pmm_manager;
+#ifdef PMM_BUDDY
+    pmm_manager = &buddy_pmm_manager;
+#else
+    pmm_manager = &best_fit_pmm_manager;  // 默认切换为 Best-Fit
+#endif
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
@@ -148,4 +154,7 @@ void pmm_init(void) {
 static void check_alloc_page(void) {
     pmm_manager->check();
     cprintf("check_alloc_page() succeeded!\n");
+    slub_check(); // 在这里加上 SLUB 测试
 }
+
+

@@ -3,7 +3,7 @@
 #include <string.h>
 #include <slub.h>
 #include <defs.h>
-
+#include <stdio.h>
 #define MAX_SIZE_CLASSES 9
 static const size_t size_classes[MAX_SIZE_CLASSES] = {
     8, 16, 32, 64, 128, 256, 512, 1024, 2048
@@ -33,7 +33,7 @@ static void slub_grow(struct kmem_cache *cache) {
     struct Page *page = alloc_pages(1);
     if (page == NULL) return;
 
-    uintptr_t page_va = page2kva(page);
+uintptr_t page_va = page2pa(page) + va_pa_offset;
     size_t obj_size = sizeof(struct slub_obj_head) + cache->size;
     size_t nr_objs = PGSIZE / obj_size;
     
