@@ -87,28 +87,41 @@ void interrupt_handler(struct trapframe *tf) {
 
 //lab3 function2 exception_handler 2412634
 void exception_handler(struct trapframe *tf) {
+    /*
+     * 2412634：
+     * 负责异常分类与返回地址修正。非法指令和断点异常需要输出现场信息，
+     * 并根据异常指令的实际长度更新 epc；其他异常打印 TrapFrame 便于调试。
+     */
     switch (tf->cause) {
     case CAUSE_ILLEGAL_INSTRUCTION:
     case CAUSE_BREAKPOINT: {
         /*
+         * 2412634：计算异常指令长度。
          * RISC-V 指令至少按 16 位对齐。低两位为 3 表示 32 位指令，
          * 其余编码表示 16 位压缩指令；据此计算异常指令的实际长度。
          */
         uint16_t instruction = *(volatile uint16_t *)tf->epc;
         uintptr_t instruction_length = (instruction & 0x3) == 0x3 ? 4 : 2;
 
+        /* 2412634：按异常类型输出对应的异常指令地址。 */
         if (tf->cause == CAUSE_ILLEGAL_INSTRUCTION) {
             cprintf("Illegal instruction at %p\n", (void *)tf->epc);
         } else {
             cprintf("Breakpoint at %p\n", (void *)tf->epc);
         }
 
-        /* 跳过触发异常的指令，避免返回后再次执行同一条异常指令。 */
+        /*
+         * 2412634：跳过触发异常的指令，
+         * 避免 sret 后再次执行同一条异常指令形成死循环。
+         */
         tf->epc += instruction_length;
         break;
     }
     default:
-        /* 本实验未单独要求的异常统一打印 TrapFrame，便于定位问题。 */
+        /*
+         * 2412634：本实验未单独要求的异常统一打印 TrapFrame，
+         * 保留完整的寄存器、epc、badvaddr 和 cause 信息用于定位问题。
+         */
         print_trapframe(tf);
         break;
     }
