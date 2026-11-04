@@ -6,8 +6,10 @@
 #include <memlayout.h>
 #include <mmu.h>
 #include <riscv.h>
+#include <sbi.h>
 #include <stdio.h>
 #include <trap.h>
+
 
 #define TICK_NUM 100
 
@@ -80,10 +82,43 @@ void print_regs(struct pushregs *gpr) {
     cprintf("  t6       0x%08x\n", gpr->t6);
 }
 
-//lab3 function2 YOUR CODE
-//lab3 function2 interrupt_handler YOUR CODE
+//lab3 function2 2412105
+//lab3 function2 interrupt_handler 2412105
 void interrupt_handler(struct trapframe *tf) {
+    // 获取中断编号：去掉 cause 最高位的中断标志位
+    uintptr_t interrupt_flag =
+        (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
+    uintptr_t cause = tf->cause & ~interrupt_flag;
+
+    // 1. 处理时钟中断
+    if (cause == IRQ_S_TIMER) {
+        // 设置下一次时钟中断，保证时钟中断持续发生
+        clock_set_next_event();
+
+        // 时钟中断计数加一
+        ticks++;
+
+        // 每累计 100 次时钟中断，输出一次信息
+        if (ticks % TICK_NUM == 0) {
+            print_ticks();
+        }
+    }
+    // 2. 处理 supervisor 软件中断
+    else if (cause == IRQ_S_SOFT) {
+        // 清除软件中断请求
+        sbi_clear_ipi();
+
+        cprintf("Supervisor software interrupt\n");
+    }
+    // 3. 处理其他未知中断
+    else {
+        cprintf("Unknown interrupt: cause %d\n", (int)cause);
+
+        // 输出完整的 Trap 上下文信息
+        print_trapframe(tf);
+    }
 }
+
 
 //lab3 function2 exception_handler YOUR CODE
 void exception_handler(struct trapframe *tf) {
