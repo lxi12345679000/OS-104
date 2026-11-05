@@ -1,4 +1,4 @@
-PROJ	:= lab2
+PROJ	:= lab3
 EMPTY	:=
 SPACE	:= $(EMPTY) $(EMPTY)
 SLASH	:= /
@@ -98,6 +98,7 @@ $(call add_files_cc,$(call listf_cc,$(LIBDIR)),libs,)
 
 KINCLUDE	+= kern/debug/ \
 			   kern/driver/ \
+			   kern/trap/ \
 			   kern/mm/ \
 			   kern/arch/
 
@@ -105,6 +106,7 @@ KSRCDIR		+= kern/init \
 			   kern/libs \
 			   kern/debug \
 			   kern/driver \
+			   kern/trap \
 			   kern/mm
 
 KCFLAGS		+= $(addprefix -I,$(KINCLUDE))
@@ -196,17 +198,17 @@ GRADE_GDB_IN	:= .gdb.in
 GRADE_QEMU_OUT	:= .qemu.out
 HANDIN			:= proj$(PROJ)-handin.tar.gz
 
-TOUCH_FILES		:=
+TOUCH_FILES		:= kern/trap/trap.c
 
 MAKEOPTS		:= --quiet --no-print-directory
 
-GRADE_TMP	:= .lab2_grade
+GRADE_TMP	:= /tmp/lab3_grade
 
 grade:
 	$(V)$(MAKE) $(MAKEOPTS) clean
 	$(V)$(RM) -rf $(GRADE_TMP)
 	$(V)$(MKDIR) $(GRADE_TMP)
-	$(V)tar -C . --exclude=.git --exclude=.vscode --exclude=vcs --exclude=.lab2_grade -cf - . | tar -C $(GRADE_TMP) -xf -
+	$(V)tar -C . --exclude=.git --exclude=.vscode --exclude=vcs -cf - . | tar -C $(GRADE_TMP) -xf -
 	$(V)python3 tools/inject.py $(GRADE_TMP)
 	$(V)cd $(GRADE_TMP) && $(SH) tools/grade.sh
 	$(V)$(RM) -rf $(GRADE_TMP)

@@ -8,10 +8,9 @@
 #include <sbi.h>
 #include <stdio.h>
 #include <string.h>
+#include <../sync/sync.h>
 #include <riscv.h>
 #include <dtb.h>
-#include <buddy_pmm.h>
-#include <slub.h>
 
 // virtual address of physical page array
 struct Page *pages;
@@ -30,17 +29,13 @@ uintptr_t satp_physical;
 
 // physical memory management
 const struct pmm_manager *pmm_manager;
-
 static void page_init(void);
+
 static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
-#ifdef PMM_BUDDY
-    pmm_manager = &buddy_pmm_manager;
-#else
-    pmm_manager = &best_fit_pmm_manager;  // 默认切换为 Best-Fit
-#endif
+    pmm_manager = &default_pmm_manager;
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
@@ -53,27 +48,45 @@ static void init_memmap(struct Page *base, size_t n) {
 // alloc_pages - call pmm->alloc_pages to allocate a continuous n*PAGESIZE
 // memory
 struct Page *alloc_pages(size_t n) {
-    return pmm_manager->alloc_pages(n);
+    struct Page *page = NULL;
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    {
+        page = pmm_manager->alloc_pages(n);
+    }
+    local_intr_restore(intr_flag);
+    return page;
 }
 
 // free_pages - call pmm->free_pages to free a continuous n*PAGESIZE memory
 void free_pages(struct Page *base, size_t n) {
-    pmm_manager->free_pages(base, n);
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    {
+        pmm_manager->free_pages(base, n);
+    }
+    local_intr_restore(intr_flag);
 }
 
 // nr_free_pages - call pmm->nr_free_pages to get the size (nr*PAGESIZE)
 // of current free memory
 size_t nr_free_pages(void) {
-    return pmm_manager->nr_free_pages();
+    size_t ret;
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    {
+        ret = pmm_manager->nr_free_pages();
+    }
+    local_intr_restore(intr_flag);
+    return ret;
 }
 
+//lab2 请补充你在lab2中的代码
 //lab2 function1 2412896
 /* page_init - 根据 DTB 内存信息建立 Page 描述符数组，并把可用完整页交给 PMM */
 static void page_init(void) {
-    /* 1. PADDR() 依赖 va_pa_offset，必须先设置 */
     va_pa_offset = PHYSICAL_MEMORY_OFFSET;
 
-    /* 2. 从 DTB 获取物理内存范围 */
     uint64_t mem_base = get_memory_base();
     uint64_t mem_size = get_memory_size();
     if (mem_base == 0 || mem_size == 0) {
@@ -82,19 +95,16 @@ static void page_init(void) {
     }
     uint64_t mem_end = mem_base + mem_size;
 
-    /* 3. 可管理物理页号上界（不含）：npage = PPN(mem_base + mem_size) */
     npage = PPN(mem_end);
     if (npage <= nbase) {
         panic("page_init: npage (%lu) <= nbase (%lu)",
               (unsigned long)npage, (unsigned long)nbase);
     }
 
-    /* 4. Page 描述符数组放在内核 end 之后，并按页对齐 */
     extern char end[];
     pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
     size_t page_count = npage - nbase;
 
-    /* 5. 所有描述符先初始化为 reserved，避免未布局的页被提前分配 */
     for (size_t i = 0; i < page_count; i++) {
         pages[i].flags = 0;
         pages[i].ref = 0;
@@ -102,7 +112,6 @@ static void page_init(void) {
         SetPageReserved(&pages[i]);
     }
 
-    /* 6. 计算描述符数组末尾的物理地址，并向上按页对齐得到空闲区起点 */
     uintptr_t pages_end_va = (uintptr_t)pages + page_count * sizeof(struct Page);
     uintptr_t pages_end_pa = PADDR(pages_end_va);
 
@@ -115,7 +124,6 @@ static void page_init(void) {
     uintptr_t free_start_pa = ROUNDUP(pages_end_pa, PGSIZE);
     uintptr_t free_end_pa   = ROUNDDOWN((uintptr_t)mem_end, PGSIZE);
 
-    /* 7. 打印 physical memory map 及当前分配器名称 */
     cprintf("physical memory map:\n");
     cprintf("  memory: 0x%016lx, [0x%016lx, 0x%016lx].\n",
             (unsigned long)mem_base,
@@ -123,7 +131,6 @@ static void page_init(void) {
             (unsigned long)(mem_end - 1));
     cprintf("  allocator: %s\n", pmm_manager->name);
 
-    /* 8. 只有存在完整空闲页时才注册给底层 PMM */
     if (free_start_pa < free_end_pa) {
         size_t n = (free_end_pa - free_start_pa) / PGSIZE;
         init_memmap(pa2page(free_start_pa), n);
@@ -154,7 +161,4 @@ void pmm_init(void) {
 static void check_alloc_page(void) {
     pmm_manager->check();
     cprintf("check_alloc_page() succeeded!\n");
-    slub_check(); // 在这里加上 SLUB 测试
 }
-
-
