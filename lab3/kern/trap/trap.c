@@ -102,11 +102,6 @@ void interrupt_handler(struct trapframe *tf) {
         if (ticks % TICK_NUM == 0) {
             print_ticks();
         }
-
-        // 达到 200 ticks 时关机
-        if (ticks == 200) {
-            sbi_shutdown(); 
-        }
     }
     // 2. 处理 supervisor 软件中断
     else if (cause == IRQ_S_SOFT) {
