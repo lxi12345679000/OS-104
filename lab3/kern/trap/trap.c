@@ -102,11 +102,17 @@ void interrupt_handler(struct trapframe *tf) {
         if (ticks % TICK_NUM == 0) {
             print_ticks();
         }
+
+        // 达到 200 ticks 时关机
+        if (ticks == 200) {
+            sbi_shutdown(); 
+        }
     }
     // 2. 处理 supervisor 软件中断
     else if (cause == IRQ_S_SOFT) {
-        // 清除软件中断请求
-        sbi_clear_ipi();
+        // lab3 的 libs/sbi.c 未实现 sbi_clear_ipi，
+        // 直接清 supervisor software interrupt pending（sip.SSIP）
+        __asm__ volatile("csrc sip, %0" :: "r"((uintptr_t)SIP_SSIP));
 
         cprintf("Supervisor software interrupt\n");
     }
@@ -118,7 +124,6 @@ void interrupt_handler(struct trapframe *tf) {
         print_trapframe(tf);
     }
 }
-
 //lab3 function2 exception_handler 2412634
 void exception_handler(struct trapframe *tf) {
     /*
