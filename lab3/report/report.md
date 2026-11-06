@@ -513,10 +513,8 @@ default:
 ## 五、测试与验证
 
 **测试截图：**
+![运行结果](images/lab3.png)
 
-```text
-<img src="./images/lab3.png" width="700" alt="运行结果">
-```
 
 ---
 
