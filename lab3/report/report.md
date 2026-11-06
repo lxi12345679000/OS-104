@@ -20,7 +20,15 @@
 
 实验报告分工
 
-每人负责本人实现模块的逻辑、核心代码、spec、prompt、bug 记录和知识点说明；石欣哲负责汇总与格式检查。
+Lab3 实验报告按成员负责模块拆分撰写，最后由石欣哲汇总与格式检查：
+
+| 成员 | 报告撰写范围 |
+|---|---|
+| 2412896-石欣哲 | 整体 Trap 执行流、TrapFrame 布局、上下文保存与恢复、`RESTORE_ALL` 与 `__alltraps` 的汇编调用约定；本模块 spec、prompt、AI 生成 bug 及解决过程；负责报告汇总、格式检查、注释与学号检查、最终集成与推送。 |
+| 2412105-贺佳怡 | 中断分类、时钟中断、OpenSBI 定时器、`sstatus/sie` 与中断重新设置；`interrupt_handler()` 模块 spec、prompt、AI 生成 bug 及解决过程。 |
+| 2412634-罗茜 | 异常分类、非法指令与断点处理、RISC-V 指令长度判断、`tf->epc` 更新、未知异常兜底；相关 OS 原理知识点映射、本实验未覆盖知识点；`exception_handler()` 模块 spec、prompt、AI 生成 bug 及解决过程。 |
+
+报告文件位于 `lab3/report/report.md`，AI 提示词汇总位于 `lab3/report/prompt.md`。各成员只负责本人模块内容，石欣哲负责最终汇总与格式统一，不改写其他成员已提交的模块内容。。
 
 ---
 
@@ -239,6 +247,7 @@ int kern_init(void) {
 2.__alltraps 通过 a0 传递 TrapFrame，满足 RISC-V 调用约定。
 
 3.当前 make clean && make 通过，QEMU 可启动到 ++ setup timer interrupts；Test 1 的最终运行验收依赖罗茜的断点异常处理，需在集成分支上完成。
+
 ---
 
 ### 功能模块二：中断与时钟处理
