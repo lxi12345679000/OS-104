@@ -125,71 +125,32 @@ void trap(struct trapframe *tf) {
     trap_dispatch(tf);
 }
 ```
+**上下文恢复宏 `RESTORE_ALL`（`kern/trap/trapentry.S`）**
 
-**时钟与 SBI 依赖（`kern/driver/clock.c`、`libs/sbi.c`）：**
+`RESTORE_ALL` 的职责与 `SAVE_ALL` 严格对应，将栈上的 TrapFrame 恢复回 CPU 寄存器。需要特别注意的是：**所有通用寄存器都依赖 `sp` 作为基址进行 `LOAD`，因此 `sp` 必须在最后一步恢复**。
 
-```c
-volatile size_t ticks;
+```asm
+.macro RESTORE_ALL
+    # 1. 恢复 4 个控制状态寄存器 (CSR)
+    LOAD t0, 32*REGBYTES(sp)
+    csrw sstatus, t0
+    LOAD t0, 33*REGBYTES(sp)
+    csrw sepc, t0
+    LOAD t0, 34*REGBYTES(sp)
+    csrw CSR_SBADADDR, t0
+    LOAD t0, 35*REGBYTES(sp)
+    csrw scause, t0
 
-static inline uint64_t get_cycles(void) {
-#if __riscv_xlen == 64
-    uint64_t n;
-    __asm__ __volatile__("rdtime %0" : "=r"(n));
-    return n;
-#else
-    uint32_t lo, hi, tmp;
-    __asm__ __volatile__(
-        "1:\n"
-        "rdtimeh %0\n"
-        "rdtime %1\n"
-        "rdtimeh %2\n"
-        "bne %0, %2, 1b"
-        : "=&r"(hi), "=&r"(lo), "=&r"(tmp));
-    return ((uint64_t)hi << 32) | lo;
-#endif
-}
+    # 2. 恢复除 sp (x2) 外的 31 个通用寄存器
+    LOAD x1, 1*REGBYTES(sp)
+    LOAD x3, 3*REGBYTES(sp)
+    # ... 
+    LOAD x31, 31*REGBYTES(sp)
 
-static uint64_t timebase = 100000;
-
-void clock_init(void) {
-    set_csr(sie, MIP_STIP);
-    clock_set_next_event();
-    ticks = 0;
-    cprintf("++ setup timer interrupts\n");
-}
-
-void clock_set_next_event(void) { sbi_set_timer(get_cycles() + timebase); }
-```
-
-```c
-void sbi_set_timer(unsigned long long stime_value) {
-    sbi_call(SBI_SET_TIMER, stime_value, 0, 0);
-}
-```
-
-**内核初始化调用顺序（`kern/init/init.c`）：**
-
-```c
-int kern_init(void) {
-    extern char edata[], end[];
-    memset(edata, 0, end - edata);
-    dtb_init();
-    cons_init();
-    const char *message = "(THU.CST) os is loading ...\0";
-    cputs(message);
-
-    print_kerninfo();
-
-    idt_init();  // init interrupt descriptor table
-    pmm_init();  // init physical memory management
-    idt_init();  // init interrupt descriptor table
-    clock_init();   // init clock interrupt
-    intr_enable();  // enable irq interrupt
-
-    while (1)
-        ;
-}
-```
+    # 3. 最后恢复原始的 sp (x2)
+    # SAVE_ALL 时，原始 sp 被存在了偏移量为 2 的位置
+    LOAD sp, 2*REGBYTES(sp)
+.endm
 
 
 #### 实现迭代过程
