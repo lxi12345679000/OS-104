@@ -1,3 +1,4 @@
 lab2/obj/
 lab2/bin/
 *.o
+.vscode/
