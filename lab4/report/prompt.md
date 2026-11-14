@@ -1,13 +1,15 @@
 # Lab 4 AI 提示词汇总
 
-> 整理版：只保留三人最终使用或最能代表实现思路的 prompt，并附 AI 回答摘要与后续修正记录。
-> 本文档随实验进度增量维护，2412896-石欣哲负责的部分先整理如下。
+> 整理版：按“我提出提示词 → AI 给出初版 → 我核对/编译/运行验证 → 调整提示词再问”的顺序整理，
+> 只保留能代表实现思路的轮次，不是完整聊天记录。本文档随实验进度增量维护。
 
 ## 2412896-石欣哲
 
 ### 1. Lab2 基线移植：`page_init()` 与 Best-Fit 分配器
 
-#### 提示词
+#### 第 1 轮：提出移植需求
+
+**我的提示词：**
 
 ```text
 〖任务说明〗
@@ -67,30 +69,68 @@ default_pmm_manager：
 - 不修改任何测试断言。
 ```
 
-#### AI 回答（摘要）
+**AI 回答（摘要）：**
 
 AI 给出了 `page_init()`、Best-Fit 的五个成员函数以及 `default_pmm_manager`
 结构体初始化，核心逻辑与 Lab2 的 `best_fit_pmm.c` 一致，只把函数名改成
-`default_*` 以匹配 Lab4 的 `pmm.c`。AI 同时指出：Lab4 的
-`default_pmm.c` 顶部保留了 `#include <best_fit_pmm.h>`，但新框架没有这个
-头文件，需要删除该 include，否则预处理阶段就会失败。
+`default_*` 以匹配 Lab4 的 `pmm.c`。同时指出：Lab4 的 `default_pmm.c`
+顶部保留了 `#include <best_fit_pmm.h>`，但新框架没有这个头文件，需要删除。
 
-#### 实际修正
+**我的核对与修正：**
 
-1. 删除不存在的 `<best_fit_pmm.h>`，避免 `fatal error: best_fit_pmm.h: No such file`。
+1. 删除不存在的 `<best_fit_pmm.h>`，避免
+   `fatal error: best_fit_pmm.h: No such file`。
 2. `default_pmm.c` 只保留实现，不重复粘贴 Lab2 已有的 `basic_check()` /
    `best_fit_check()`，避免与框架测试函数重名。
 3. `struct pmm_manager` 的 `.check` 指向框架里的 `best_fit_check()`，
    因此在结构体前增加 `static void best_fit_check(void);` 前置声明。
-4. 移植后 `kern/mm/kmalloc.c` 在 GCC 15 下报
-   `passing argument 1 of 'kva2page' makes pointer from integer without a cast`，
-   在调用处补 `(void *)` 强制转换，不改 `kva2page()` 的既有签名。
+4. 编译通过后，我在 QEMU 中确认 `check_alloc_page() succeeded!`。
+
+#### 第 2 轮：处理 `kmalloc.c` 的工具链报错
+
+**我的提示词：**
+
+```text
+〖任务说明〗
+把 Lab2 代码移植进 Lab4 后，kern/mm/kmalloc.c 在 GCC 15.1.0 下报错：
+  passing argument 1 of 'kva2page' makes pointer from integer without a cast
+请在不改变 kva2page() 既有签名、不修改 kmalloc 逻辑的前提下修复。
+
+〖依赖说明〗
+- __slob_free_pages(unsigned long kva, int order) 的参数是整数地址；
+- pmm.h 中 kva2page() 的签名是 struct Page *kva2page(void *kva)。
+
+〖接口清单〗
+- 不修改 kva2page() 的声明与定义；
+- 只允许调整调用处的类型转换。
+
+〖行为规格〗
+- 前置：kva 是内核虚拟地址的整数形式；
+- 后置：调用 kva2page((void *)kva)，编译通过；
+- 后置：释放的仍是同一个物理页，运行期行为不变。
+
+验证：
+- make 通过；
+- 启动后 kmalloc_init() succeeded!。
+```
+
+**AI 回答（摘要）：**
+
+AI 指出这是整数到指针的隐式转换，建议在调用处显式写成
+`kva2page((void *)kva)`，不要为了适配调用点去改 `kva2page()` 的签名。
+
+**我的核对与修正：**
+
+只改了 `__slob_free_pages()` 中的一处调用，重新编译通过，
+`kmalloc_init() succeeded!` 正常输出。
 
 ---
 
 ### 2. Lab3 基线移植：`interrupt_handler()` 与 `exception_handler()`
 
-#### 提示词
+#### 第 1 轮：移植中断/异常处理
+
+**我的提示词：**
 
 ```text
 〖任务说明〗
@@ -140,14 +180,14 @@ exception_handler：
 - 不修改 Lab4 的 trap() 分发函数。
 ```
 
-#### AI 回答（摘要）
+**AI 回答（摘要）：**
 
-AI 直接复用了 Lab3 的两个处理函数，并指出 Lab4 的 `trap()` 已经内联了
-Lab3 的 `trap_dispatch()` 逻辑，因此不能再重复定义 `trap_dispatch()`，
-否则会与框架代码重复。AI 还提醒：Lab4 的 `trap.h` 没有声明这两个函数，
-所以必须把定义放在 `trap()` 之前，或者补函数声明。
+生成结果直接复用了 Lab3 的两个处理函数，并指出 Lab4 的 `trap()` 已经
+内联了 Lab3 的 `trap_dispatch()` 逻辑，因此不能再重复定义
+`trap_dispatch()`，否则会与框架代码重复。还提醒：Lab4 的 `trap.h`
+没有声明这两个函数，必须把定义放在 `trap()` 之前，或者补函数声明。
 
-#### 实际修正
+**我的核对与修正：**
 
 1. 只移植 `interrupt_handler()` 和 `exception_handler()`，没有移植
    `trap_dispatch()`，避免与 Lab4 已有的 `trap()` 分发逻辑冲突。
@@ -160,24 +200,23 @@ Lab3 的 `trap_dispatch()` 逻辑，因此不能再重复定义 `trap_dispatch()
 
 ### 3. Lab4 功能模块一：`page_insert()` 与 `page_remove()`
 
-#### 提示词
+#### 第 1 轮：先实现基本映射
+
+**我的提示词：**
 
 ```text
 〖任务说明〗
 在 Lab4 的 kern/mm/pmm.c 中，只修改 “//LAB4 function1 YOUR CODE” 标记处，
-实现虚拟内存页映射的建立与撤销：
+实现：
 - int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
 - void page_remove(pde_t *pgdir, uintptr_t la)。
+要求把物理页映射到指定线性地址，并在删除映射时正确维护引用计数和 TLB。
 
 约束：
 - 不得修改 get_pte()、get_page()、tlb_invalidate()、check_pgdir()、
   check_boot_pgdir()、trap 相关文件、proc 相关文件和 tools/ 下脚本；
 - 不得修改函数签名、struct Page、pde_t/pte_t 和 PTE_* 宏；
-- 保留 “LAB4 function1” 注释，把 YOUR CODE 替换为 2412896；
-- 允许增加文件内 static 辅助函数。
-
-输出要求：
-给出完整函数实现，并说明页表项、Page.ref、TLB 三者如何保持一致。
+- 保留 “LAB4 function1” 注释，把 YOUR CODE 替换为 2412896。
 
 〖依赖说明〗
 - get_pte(pgdir, la, create)：负责定位/创建多级页表项，失败返回 NULL；
@@ -191,39 +230,94 @@ Lab3 的 `trap_dispatch()` 逻辑，因此不能再重复定义 `trap_dispatch()
 〖接口清单〗
 - int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm)；
 - void page_remove(pde_t *pgdir, uintptr_t la)；
-- 允许增加 static void page_remove_pte(pde_t *, uintptr_t, pte_t *) 作为内部辅助。
+- 允许增加 static 辅助函数。
 
 〖行为规格〗
 page_insert：
-- 前置：pgdir 是有效页目录，page 是有效物理页描述符；
 - 用 get_pte(pgdir, la, 1) 定位或创建 PTE；
-- get_pte 返回 NULL 时返回 -E_NO_MEM，不留下部分可见映射；
-- 新映射建立前先 page_ref_inc(page)；
-- 若原 PTE 有效且指向同一物理页：只更新权限，撤销刚才的引用计数增量，
-  不得重复增加引用；
-- 若原 PTE 有效且指向其他物理页：先完整撤销旧映射并减少旧页引用；
-- 最后把 PTE 写成 pte_create(page2ppn(page), perm)，并调用
-  tlb_invalidate(pgdir, la)；
+- get_pte 返回 NULL 时返回 -E_NO_MEM；
+- 把 PTE 写成 pte_create(page2ppn(page), perm)，并刷新 TLB；
 - 成功返回 0。
 
 page_remove：
-- 用 get_pte(pgdir, la, 0)，不得为了删除而创建中间页表；
-- 地址本来没有映射时安静返回，不 panic、不报错；
-- 有效映射：page_ref_dec(page)，引用计数归零时 free_page(page)，
-  清空 PTE，并调用 tlb_invalidate(pgdir, la)；
-- 对同一地址重复调用必须幂等。
+- 用 get_pte(pgdir, la, 0) 定位 PTE；
+- 有映射时减少引用计数并在归零时释放物理页，清空 PTE 并刷新 TLB；
+- 未映射时安静返回。
 
 验证：
 - make 通过；
-- pmm_init() 中 check_pgdir() 与 check_boot_pgdir() 全部断言通过；
-- 注入测试输出 [Test PMM] PASS；
-- 同一物理页多重映射、权限覆盖、旧映射替换、重复 page_remove 后
-  引用计数与空闲页数均符合测试断言。
+- check_pgdir()、check_boot_pgdir() 通过。
 ```
 
-#### AI 回答（摘要）
+**AI 回答（摘要）：**
 
-AI 给出的核心实现是：
+生成结果是一个“只处理新映射”的版本：`page_insert()` 直接
+`page_ref_inc(page)` 后覆盖 PTE，`page_remove()` 直接减引用并清空 PTE，
+末尾都调用了 `tlb_invalidate()`。它没有区分“原地址已经映射到同一页”
+和“原地址映射到其他页”。
+
+**我运行后的结果：**
+
+`check_pgdir()` 在下面这条断言失败：
+
+```text
+assert(page_ref(p1) == 1);
+```
+
+原因：第一次把 `p1` 映射到 `0x0` 后引用为 1；再次把 `p1` 映射到
+`PGSIZE` 时，生成结果又无条件加 1；如果原 PTE 已经指向同一物理页，
+引用计数就会多加。这说明第一版提示词的 Specification 漏掉了分支。
+
+#### 第 2 轮：补充“同一页重复映射”和“替换旧映射”
+
+**我的提示词：**
+
+```text
+〖任务说明〗
+上一版 page_insert() 在 check_pgdir() 中失败：
+  assert(page_ref(p1) == 1);
+原因是没有区分“同一物理页重复映射同一地址”和“原地址映射到其他物理页”。
+请只修改 kern/mm/pmm.c 的 //LAB4 function1 区域，补齐这两种分支。
+
+〖依赖说明〗
+- 原 PTE 有效时，pte2page(*ptep) 可以得到旧的 struct Page；
+- page_ref_inc/page_ref_dec 只改引用计数，不负责释放；
+- free_page() 只能在引用计数归零后调用；
+- tlb_invalidate(pgdir, la) 用于失效指定地址的 TLB。
+
+〖接口清单〗
+- 保持 page_insert()、page_remove() 签名不变；
+- 允许增加 static void page_remove_pte(pde_t *, uintptr_t, pte_t *)。
+
+〖行为规格〗
+page_insert：
+- get_pte(pgdir, la, 1) 返回 NULL 时返回 -E_NO_MEM，不留下半完成映射；
+- 新映射建立前先 page_ref_inc(page)；
+- 若原 PTE 有效且指向同一物理页：只更新权限，撤销刚才的引用增量，
+  不得重复增加引用；
+- 若原 PTE 有效且指向其他物理页：先调用 page_remove_pte() 完整撤销旧映射；
+- 最后写入 pte_create(page2ppn(page), perm)，并 tlb_invalidate()。
+
+page_remove_pte：
+- 前置：ptep 指向一个页表项；
+- 若 PTE 有效：page_ref_dec(page)，归零时 free_page(page)；
+- 清空 PTE，并 tlb_invalidate(pgdir, la)；
+- 若 PTE 无效：什么都不做。
+
+page_remove：
+- get_pte(pgdir, la, 0)，不得为了删除而创建中间页表；
+- 未映射时安静返回；
+- 重复调用必须幂等。
+
+验证：
+- check_pgdir()、check_boot_pgdir() 全部通过；
+- 注入测试输出 [Test PMM] PASS。
+```
+
+**AI 回答（摘要）：**
+
+第二版给出了 `page_remove_pte()` 辅助函数，并在 `page_insert()` 中增加
+“同一页 / 不同页”两条分支，最终实现如下：
 
 ```c
 static void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
@@ -242,7 +336,9 @@ int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
     if (ptep == NULL) {
         return -E_NO_MEM;
     }
+
     page_ref_inc(page);
+
     if (*ptep & PTE_V) {
         struct Page *old_page = pte2page(*ptep);
         if (old_page == page) {
@@ -251,6 +347,7 @@ int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
             page_remove_pte(pgdir, la, ptep);
         }
     }
+
     *ptep = pte_create(page2ppn(page), perm);
     tlb_invalidate(pgdir, la);
     return 0;
@@ -264,41 +361,25 @@ void page_remove(pde_t *pgdir, uintptr_t la) {
 }
 ```
 
-AI 同时解释了三点：`get_pte(..., 1)` 可能创建中间页表，失败要返回
-`-E_NO_MEM`；同一物理页重复插入同一地址时必须先加后减，净引用为 0；
-旧页被替换时要通过 `page_remove_pte()` 统一完成减引用、释放、清 PTE
-和 TLB 失效。
+**我的核对与验证：**
 
-#### 实现迭代过程
-
-##### 第一次迭代
-
-提示词只写了“建立映射/删除映射”，没有明确“同一物理页重复映射同一地址”
-和“替换旧映射”的区别。AI 生成的版本在每次 `page_insert()` 都无条件
-`page_ref_inc(page)`，如果原 PTE 已经指向同一物理页，引用计数会多加 1，
-`check_pgdir()` 中 `assert(page_ref(p1) == 1)` 会失败。
-
-**修正：** 在 Specification 中增加两条分支：
-- 原 PTE 有效且 `pte2page(*ptep) == page`：只更新权限，回退本次引用增量；
-- 原 PTE 有效且指向其他页：先调用 `page_remove_pte()` 撤销旧映射。
-
-##### 第二次迭代
-
-提示词补充了 TLB 一致性要求后，AI 在 `page_insert()` 和
-`page_remove_pte()` 末尾都加入了 `tlb_invalidate(pgdir, la)`。
-重新编译并在临时验证副本中运行，`check_pgdir()` 与
-`check_boot_pgdir()` 全部通过，注入测试输出 `[Test PMM] PASS`。
-
-**最终结果：**
-- ✅ 编译通过；
-- ✅ `check_pgdir()` / `check_boot_pgdir()` 通过；
-- ✅ `[Test PMM] PASS`。
+1. 逐条对照 `check_pgdir()` 的断言，确认：
+   - 首次映射后引用为 1；
+   - 替换旧页后旧页引用归零；
+   - 同一页重复插入同一地址时引用净增 0；
+   - 重复 `page_remove()` 不重复减引用。
+2. 在临时验证副本中运行，输出：
+   `check_pgdir() succeeded!`、`check_boot_pgdir() succeeded!`、
+   `[Test PMM] PASS`。
+3. 保留 `//LAB4 function1 2412896` 标记，没有改动 `get_pte()` 和测试代码。
 
 ---
 
 ### 4. GCC 15 兼容性：`kernel_thread` 回调类型
 
-#### 提示词
+#### 第 1 轮：定位并修复工具链差异
+
+**我的提示词：**
 
 ```text
 〖任务说明〗
@@ -331,13 +412,13 @@ kernel_thread 语义的兼容方案。
 - make grade 能进入 QEMU 并输出三项测试结果。
 ```
 
-#### AI 回答（摘要）
+**AI 回答（摘要）：**
 
-AI 建议在 Makefile 的 CFLAGS 中加入
+建议在 Makefile 的 CFLAGS 中加入
 `-Wno-error=incompatible-pointer-types`：保留警告但不升级为错误，
 既不改测试文件，也不改 `kernel_thread` 的签名。
 
-#### 实际修正
+**我的核对与修正：**
 
 已在 `lab4/code/Makefile` 的 CFLAGS 中加入该选项，并加注释说明原因。
 这样 GCC 10/13 环境不受影响，GCC 15 环境也能继续构建。
