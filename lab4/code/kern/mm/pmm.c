@@ -282,7 +282,52 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store)
     return NULL;
 }
 
-//LAB4 function1 YOUR CODE
+//LAB4 function1 2412896
+/* page_remove_pte - 撤销一个已经定位到的有效页表项，并同步引用计数与 TLB */
+static void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
+    if (*ptep & PTE_V) {
+        struct Page *page = pte2page(*ptep);
+        if (page_ref_dec(page) == 0) {
+            free_page(page);
+        }
+        *ptep = 0;
+        tlb_invalidate(pgdir, la);
+    }
+}
+
+/* page_insert - 在 pgdir 中建立 la -> page 的映射，权限为 perm
+ * 返回 0 表示成功，-E_NO_MEM 表示中间页表分配失败 */
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
+    pte_t *ptep = get_pte(pgdir, la, 1);
+    if (ptep == NULL) {
+        return -E_NO_MEM;
+    }
+
+    page_ref_inc(page);
+
+    if (*ptep & PTE_V) {
+        struct Page *old_page = pte2page(*ptep);
+        if (old_page == page) {
+            /* 同一物理页重复映射到同一地址：只更新权限，不重复增加引用 */
+            page_ref_dec(page);
+        } else {
+            /* 原地址映射到其他物理页：先完整撤销旧映射 */
+            page_remove_pte(pgdir, la, ptep);
+        }
+    }
+
+    *ptep = pte_create(page2ppn(page), perm);
+    tlb_invalidate(pgdir, la);
+    return 0;
+}
+
+/* page_remove - 幂等删除 la 处的映射；未映射时安静返回 */
+void page_remove(pde_t *pgdir, uintptr_t la) {
+    pte_t *ptep = get_pte(pgdir, la, 0);
+    if (ptep != NULL) {
+        page_remove_pte(pgdir, la, ptep);
+    }
+}
 
 
 

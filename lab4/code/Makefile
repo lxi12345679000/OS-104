@@ -31,7 +31,9 @@ GDB		:= $(GCCPREFIX)gdb
 
 CC		:= $(GCCPREFIX)gcc
 CFLAGS  := -mcmodel=medany -O2 -std=gnu99 -Wno-unused
-CFLAGS	+= -fno-builtin -Wall -nostdinc $(DEFS)
+# GCC 14+ 默认将 incompatible-pointer-types 视为错误；lab4 测试中的
+# kernel_thread 回调返回类型为 void，这里保持其为警告以兼容新工具链。
+CFLAGS	+= -fno-builtin -Wall -Wno-error=incompatible-pointer-types -nostdinc $(DEFS)
 CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections
 CFLAGS	+= -g
 CTYPE	:= c S
