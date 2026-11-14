@@ -221,4 +221,34 @@ init_main(void *arg)
 //LAB4 function2 YOUR CODE
 
 
-//LAB4 function3 YOUR CODE
+//LAB4 function3 2412634
+/* cpu_idle - idleproc 的执行主体；需要重新调度时主动让出 CPU */
+void cpu_idle(void) {
+    while (1) {
+        if (current->need_resched) {
+            schedule();
+        }
+    }
+}
+
+/* proc_run - 在关中断临界区内切换 current、Sv39 页表和执行上下文 */
+void proc_run(struct proc_struct *proc) {
+    if (proc == current) {
+        return;
+    }
+
+    assert(proc->state == PROC_RUNNABLE);
+
+    bool intr_flag;
+    struct proc_struct *prev = current;
+    struct proc_struct *next = proc;
+    local_intr_save(intr_flag);
+    {
+        current = next;
+        write_csr(satp,
+                  0x8000000000000000 | (next->pgdir >> RISCV_PGSHIFT));
+        flush_tlb();
+        switch_to(&(prev->context), &(next->context));
+    }
+    local_intr_restore(intr_flag);
+}
