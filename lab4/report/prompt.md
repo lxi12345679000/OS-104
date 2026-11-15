@@ -422,3 +422,340 @@ kernel_thread 语义的兼容方案。
 
 已在 `lab4/code/Makefile` 的 CFLAGS 中加入该选项，并加注释说明原因。
 这样 GCC 10/13 环境不受影响，GCC 15 环境也能继续构建。
+
+---
+
+### 5. Lab3 Trap 入口基线补齐：`RESTORE_ALL` 与 `__alltraps`
+
+#### 第 1 轮：补齐 Trap 返回链
+
+**我的提示词：**
+
+```text
+〖任务说明〗
+Lab4 的 kern/trap/trapentry.S 仍是 Lab3 占位：
+RESTORE_ALL 为空，__alltraps 没有调用 trap()，导致首次 sret 和时钟中断
+无法恢复 TrapFrame。请只修改该文件，补齐：
+- RESTORE_ALL：恢复 sstatus、sepc、sbadaddr、scause，再恢复 x1、x3~x31，
+  最后恢复 sp；
+- __alltraps：SAVE_ALL 后执行 mv a0, sp; jal trap；
+- 保留已有的 forkrets。
+
+约束：
+- 不修改 SAVE_ALL 的保存布局；
+- 不修改 struct trapframe、trap()、idt_init()；
+- sbadaddr 使用 0x143，兼容不认识 CSR_SBADADDR 的 GCC 10；
+- 保留 lab3 标记和负责人学号。
+
+〖依赖说明〗
+- SAVE_ALL 把 x1、x3~x31 保存在 1..31*REGBYTES，
+  原始 sp 在 2*REGBYTES，sstatus/sepc/sbadaddr/scause 在 32..35*REGBYTES；
+- riscv.h 定义 STORE/LOAD/REGBYTES；
+- __trapret 已存在，内部执行 RESTORE_ALL 和 sret；
+- forkrets 已存在，负责 move sp, a0; j __trapret。
+
+〖接口清单〗
+- 保持 RESTORE_ALL、__alltraps、__trapret、forkrets 符号名不变；
+- 允许在 __alltraps 前增加 .align(2)。
+
+〖行为规格〗
+- 前置：sp 指向当前 TrapFrame；
+- 后置：CSR 与通用寄存器按 SAVE_ALL 的偏移恢复；
+- 后置：sp 最后从 2*REGBYTES 恢复；
+- 后置：trap() 返回后落入 __trapret；
+- 时钟中断能反复触发并输出 100 ticks。
+
+验证：
+- make 通过；
+- QEMU 中 check_pgdir/check_boot_pgdir/check_vmm 通过，并持续输出 100 ticks。
+```
+
+**AI 回答（摘要）：**
+
+生成结果给出了 RESTORE_ALL 的 CSR/通用寄存器恢复序列和
+`mv a0, sp; jal trap` 入口调用，并确认 `forkrets` 必须保留在 `__trapret` 之后。
+
+**我的核对与修正：**
+
+1. `sbadaddr` 使用 `0x143` 而不是 `CSR_SBADADDR`，兼容 GCC 10。
+2. 恢复顺序为 CSR → x1/x3~x31 → sp，sp 最后恢复。
+3. 在 `/tmp` 临时副本中只补 `proc_init()` 空桩，启动后输出
+   `check_pgdir() succeeded!`、`check_boot_pgdir() succeeded!` 和持续
+   `100 ticks`，证明 Trap 进入/返回链正常。
+
+## 2412105-贺佳怡
+
+### 1. 功能模块二：进程创建与初始化
+
+#### 第 1 轮：实现 PCB 与线程创建链
+
+**我的提示词：**
+
+```text
+〖任务说明〗
+在 Lab4 的 kern/process/proc.c 中，只修改 “//LAB4 function2 YOUR CODE”
+标记处，实现进程控制块分配、idleproc/initproc 创建、内核线程创建、
+fork 路径和首次运行上下文。
+
+需要实现：
+- static struct proc_struct *alloc_proc(void);
+- void proc_init(void);
+- int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags);
+- int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf);
+- static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf);
+- static int copy_mm(uint32_t clone_flags, struct proc_struct *proc)。
+
+约束：
+- 只改 function2 区域，把 YOUR CODE 替换为 2412105；
+- 不修改 function3、pmm.c、trapentry.S、tools/；
+- 不改函数签名、struct proc_struct、struct context、struct trapframe；
+- 保留 lab4 注释。
+
+输出要求：给出完整 C 代码，并说明首次运行链
+switch_to -> forkret -> forkrets -> __trapret -> kernel_thread_entry -> fn(arg)。
+
+〖依赖说明〗
+- kmalloc/kfree、memset、list_init/list_add、proc_list、hash_list、
+  nr_process、idleproc、initproc、current 已在框架中定义；
+- setup_kstack、put_kstack、get_pid、hash_proc、find_proc、wakeup_proc、
+  set_proc_name 已存在；
+- pmm.h 提供 boot_pgdir_pa、KSTACKSIZE；trap.h 提供 struct trapframe；
+- kernel_thread_entry 在 kern/process/entry.S，forkret 在 proc.c，
+  forkrets 在 trapentry.S。
+
+〖接口清单〗
+- 保持上述 6 个函数签名不变；
+- 允许在 function2 区域顶部增加两个 static 前置声明；
+- 不新增对外全局接口。
+
+〖行为规格〗
+alloc_proc：
+- kmalloc 失败返回 NULL；
+- state=PROC_UNINIT，pid=-1，runs=0，kstack=0，need_resched=0，
+  parent=NULL，mm=NULL，tf=NULL，flags=0，name 清零；
+- context 用 memset 清零，使 idleproc 的 context.ra 为 0；
+- pgdir=boot_pgdir_pa；list_link/hash_link 初始化。
+
+proc_init：
+- 初始化 proc_list 和 hash_list；
+- 创建 idleproc：pid=0、PROC_RUNNABLE、kstack=bootstack、
+  need_resched=1、name="idle"；current=idleproc；nr_process++；
+- 调用 kernel_thread(init_main, "Hello world!!", 0)；
+- 用 find_proc 找到 initproc，失败 panic；设置 name="init"。
+
+kernel_thread：
+- 栈上 TrapFrame 清零；
+- epc=kernel_thread_entry，s0=fn，s1=arg；
+- status 按 sstatus 设置 SPP/SPIE、清除 SIE；
+- 调用 do_fork 并返回 PID。
+
+do_fork：
+- 检查 nr_process < MAX_PROCESS；
+- alloc_proc、setup_kstack、copy_mm、copy_thread；
+- 关中断分配 pid、hash_proc、加入 proc_list、nr_process++；
+- wakeup_proc 后返回 PID；
+- 任一步失败按顺序 put_kstack/kfree 清理，不能泄漏。
+
+copy_thread：
+- 在内核栈顶放置 TrapFrame 并复制；
+- a0=0；sp=esp（esp==0 时用 tf 地址）；
+- context.ra=forkret，context.sp=tf。
+
+copy_mm：
+- Lab4 中 current->mm 为 NULL，proc->mm=NULL，返回 0；
+- 不引入 Lab5 的地址空间复制。
+
+验证：
+- make 通过；
+- [Test Process Create] PASS；
+- make qemu 输出 initproc 三行。
+```
+
+**AI 回答（摘要）：**
+
+生成结果给出了 `alloc_proc`、`proc_init`、`kernel_thread`、`do_fork`、
+`copy_thread`、`copy_mm` 的完整实现，并说明 `copy_thread` 把
+`context.ra` 设置为 `forkret` 是首次运行链的关键。
+
+**我的核对与修正：**
+
+1. 第一版把 `copy_thread`/`copy_mm` 定义在 `do_fork` 之后，编译报
+   `implicit declaration of function 'copy_thread'`；在区域顶部补了两条
+   static 前置声明。
+2. `alloc_proc` 中用 `memset` 清零 `context`，保证
+   `idleproc->context.ra == 0`，满足测试断言。
+3. `copy_mm` 保持 `proc->mm = NULL`，没有引入 Lab5 的 VMA/页目录复制。
+4. 在 WSL 下 `make grade` 曾报 `no $qemu_out`，确认是本地 QEMU 版本与
+   grade.sh 输出重定向差异，不是代码问题；直接 `make qemu` 能输出三行结果。
+
+#### 第 2 轮：核对修改边界与测试断言
+
+**我的提示词：**
+
+```text
+请核对 function2 是否只修改了 //LAB4 function2 区域，
+是否覆盖了罗茜的 function3，是否修改了 pmm.c、trapentry.S 或 tools/。
+同时给出 [Test Process Create] 的验证点。
+```
+
+**AI 回答（摘要）：**
+
+核对结果为只修改了 proc.c 的 function2 区域，function3 保留；测试点包括
+idleproc 的 pid/kstack/parent/mm/tf/runs/context.ra，以及 initproc 的
+pid/parent/state/context.ra/sp。
+
+**我的核对：**
+
+在集成分支上确认 `git diff --stat` 只包含 proc.c，合并后
+`[Test Process Create] PASS`。
+
+## 2412634-罗茜
+
+### 1. 功能模块三：调度与上下文切换
+
+#### 第 1 轮：确定文件边界和调度链
+
+**我的提示词：**
+
+```text
+任务：实现 Lab4 功能模块三。
+
+允许修改：
+- kern/process/proc.c 的 //LAB4 function3 区域；
+- kern/schedule/sched.c；
+- kern/process/switch.S。
+
+不要修改：
+- proc.c 的 function2；
+- pmm.c；
+- tools/test_lab4.c 和 tools/grade.sh；
+- 函数签名、结构体、宏和 lab4 注释。
+
+实现目标：
+1. cpu_idle() 在 current->need_resched 为真时调用 schedule()；
+2. schedule() 对 idleproc 从链表头扫描，对普通线程从后继扫描，
+   只选择 PROC_RUNNABLE，找不到时回退 idleproc；
+3. proc_run() 在关中断临界区中更新 current、切换 Sv39 satp、
+   刷 TLB 并调用 switch_to()；
+4. switch_to() 按 struct context 顺序保存和恢复 ra、sp、s0~s11。
+
+约束：
+- proc_run() 不能使用 libs/riscv.h 中遗留的 Sv32 lsatp()；
+- 需要参考 pmm.c 的 enable_paging() 构造 Sv39 satp；
+- 调度器和 proc_run() 的关键区必须使用 local_intr_save/restore；
+- 汇编偏移必须与 proc.h 的 struct context 实际布局一致。
+
+验证：
+- 使用 GCC 10.2.0 编译；
+- 用 objdump 检查 switch_to 的保存、恢复偏移；
+- 明确说明当前分支若因 function2 未实现而链接失败，
+  不能误判为本模块错误。
+```
+
+**AI 初版中需要核对的风险：**
+
+- 容易直接使用 `lsatp()`，但它是 Sv32 编码；
+- 容易把 `proc->pgdir` 原值直接写入 `satp`，忘记右移 `RISCV_PGSHIFT`；
+- 容易在 `schedule()` 扫描链表头哨兵时把链表头误当成进程；
+- 容易把 `runs++` 和 `proc_run()` 重复执行；
+- 容易按 x86 或其他上下文字段的经验写错汇编偏移。
+
+**我的修正：**
+
+1. 使用 Sv39 模式：
+
+```c
+write_csr(satp,
+          0x8000000000000000 | (next->pgdir >> RISCV_PGSHIFT));
+```
+
+2. `schedule()` 使用环形 `do-while`，并在 `le == &proc_list` 时跳过哨兵。
+3. `next->runs++` 只放在 `schedule()` 中，`proc_run()` 不重复增加。
+4. 通过 `struct context` 字段顺序确定汇编偏移，再用反汇编核对。
+
+#### 第 2 轮：上下文切换汇编复核
+
+**我的提示词：**
+
+```text
+请检查 switch_to 是否完整保存和恢复 struct context 的
+ra、sp、s0~s11，并核对 a0/a1 的参数顺序与每个 STORE/LOAD 偏移。
+不要修改结构体字段顺序；若发现问题只调整 switch.S。
+```
+
+**AI 输出：**
+
+给出 RV64 下使用 `STORE`/`LOAD` 宏的保存—恢复序列。当前工程定义
+`STORE=sd`、`LOAD=ld`、`REGBYTES=8`，因此每个字段占 8 字节。
+
+**静态检查发现并规避的问题：**
+
+1. 先保存 `ra`，再恢复 `sp`；不能在恢复时覆盖仍用于寻址的 `a1`。
+2. 恢复顺序与保存顺序一致：`ra/sp/s0...s11`。
+3. `ret` 使用刚恢复的 `ra`，首次切换会返回 `forkret`。
+
+#### 第 3 轮：编译与反汇编验证
+
+**执行的检查：**
+
+```sh
+make clean
+make -j2
+riscv64-unknown-elf-objdump -d obj/kern/process/switch.o
+```
+
+**结果：**
+
+- 所有 `.c` 和 `.S` 文件编译通过；
+- 链接阶段只缺 function2 的 `proc_init`，符合当前分支状态；
+- `switch_to` 反汇编偏移为：
+
+```text
+ra=0, sp=8, s0=16, s1=24, s2=32, s3=40, s4=48, s5=56,
+s6=64, s7=72, s8=80, s9=88, s10=96, s11=104
+```
+
+#### 第 4 轮：隔离式集成验证
+
+**我的提示词：**
+
+```text
+不要修改罗茜正式分支，也不要提交贺佳怡的代码。
+复制一份 /tmp 临时工程，在其中仅补入临时 function2 和 Lab3 Trap 返回链，
+然后使用现有 GCC 10.2.0 和 QEMU 4.1.1 执行 make grade。
+目标是验证 cpu_idle、schedule、proc_run、switch_to 能否通过
+Test Schedule，并检查 initproc 三行输出。
+```
+
+**执行过程与结果：**
+
+在临时副本中补入临时 function2 和 Trap 返回链后，完整评分通过：
+
+```text
+check PMM:              OK
+check Process Create:   OK
+check Schedule:         OK
+Total Score: 30/30
+```
+
+临时依赖没有提交到正式分支。
+
+### 2. Challenge 1：局部中断保存/恢复
+
+**我的提示词：**
+
+```text
+解释 local_intr_save(intr_flag) 与 local_intr_restore(intr_flag)
+如何实现开关中断。回答需要包括：
+- sstatus.SIE 的读取；
+- 原状态为开启/关闭时的不同处理；
+- 为什么不能无条件开启中断；
+- 如何保护 schedule() 和 proc_run()；
+- 它与多核锁的区别。
+```
+
+**核对后的结论：**
+
+`__intr_save()` 只在进入前 `SIE=1` 时关闭中断并返回真；
+`__intr_restore()` 只在返回值为真时重新开启。因此它保存的是局部中断状态，
+支持嵌套临界区，但不能代替多核互斥锁。
