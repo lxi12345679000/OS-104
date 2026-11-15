@@ -585,7 +585,19 @@ To U: "en.., Bye, Bye. :)"
 
 这三行之后会出现 `do_exit()` 的 `panic("process exit!!.")`。这是 Lab4 框架中 `do_exit()` 仍为占位实现导致的预期现象：`init_main()` 返回后 `kernel_thread_entry` 会跳转到 `do_exit()`，评分脚本在读取到三行输出后已经完成 Schedule 检查。
 
-最终评分截图待补充。
+### 5.3 测试截图
+
+**编译成功（`make clean && make`）：**
+
+![make 编译成功](./images/make_build.png)
+
+**QEMU 运行与 `initproc` 输出（`make qemu`）：**
+
+![make qemu 运行结果](./images/make_qemu.png)
+
+**完整评分（`make grade`）：**
+
+![make grade 评分结果](./images/make_grade.png)
 
 ---
 
