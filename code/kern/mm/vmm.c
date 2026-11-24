@@ -205,9 +205,10 @@ out:
 //lab5 function3 2412105
 // dup_mmap - 复制 from 地址空间中的全部 VMA 到 to
 //
-// 2412105：普通 fork 采用深复制，每个页面由 copy_range(..., share=false)
-// 分配新物理页。失败时由调用方 copy_mm 统一回收已经插入的 VMA 和页面，
-// 保证不会留下半完成的地址空间。
+// 2412105：lab5 的 fork 采用写时复制，因此普通可写页面通过
+// copy_range(..., share=true) 共享，并在两侧 PTE 上打 PTE_COW 标记。
+// 失败时由调用方 copy_mm 统一回收已经插入的 VMA 和页面，保证不会留下
+// 半完成的地址空间。
 int
 dup_mmap(struct mm_struct *to, struct mm_struct *from)
 {
@@ -232,9 +233,9 @@ dup_mmap(struct mm_struct *to, struct mm_struct *from)
 
         insert_vma_struct(to, new_vma);
 
-        // share == false：深复制物理页。
+        // share == true：共享物理页，可写页转为只读 + PTE_COW。
         if (copy_range(to->pgdir, from->pgdir,
-                       vma->vm_start, vma->vm_end, 0) != 0)
+                       vma->vm_start, vma->vm_end, 1) != 0)
         {
             return -E_NO_MEM;
         }
@@ -244,10 +245,11 @@ dup_mmap(struct mm_struct *to, struct mm_struct *from)
 }
 
 //lab5 function3 2412105
-// do_pgfault - 处理普通按需分页缺页
+// do_pgfault - 处理普通按需分页与 COW 写缺页
 //
-// 2412105：调用方（trap.c）已经把异常原因翻译为软件错误码，
-// PFAULT_WRITE 表示本次访问是写。
+// 2412105：调用方（trap.c）已经把异常原因翻译为软件错误码：
+//   PFAULT_WRITE  本次访问是写
+//   PFAULT_PRESENT 触发异常的 PTE 已经有效（COW 写保护就是这种情况）
 //
 // 返回 0 表示缺页已处理，可以返回用户态继续执行；负值表示失败。
 int
@@ -287,10 +289,50 @@ do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
         return -E_NO_MEM;
     }
 
-    // 3. PTE 已经有效：普通 fork 阶段不应出现这种情况。
+    // 3. PTE 已经有效：只可能是 COW 写保护缺页。
     if (*ptep & PTE_V)
     {
-        return -E_INVAL;
+        if (!write || !(*ptep & PTE_COW))
+        {
+            // 非 COW 的有效 PTE 再次缺页，说明是真正的权限错误。
+            return -E_INVAL;
+        }
+
+        struct Page *page = pte2page(*ptep);
+
+        if (page_ref(page) > 1)
+        {
+            // 3.1 仍有其他进程共享该物理页：复制一份私有页。
+            struct Page *new_page = alloc_page();
+
+            if (new_page == NULL)
+            {
+                return -E_NO_MEM;
+            }
+
+            memcpy(KADDR(page2pa(new_page)),
+                   KADDR(page2pa(page)),
+                   PGSIZE);
+
+            // 新页恢复 VMA 允许的写权限，并去掉 COW 标记。
+            uint32_t perm = (*ptep & 0x3FF);
+            perm = (perm | PTE_W) & ~PTE_COW;
+
+            if (page_insert(mm->pgdir, new_page, la, perm) != 0)
+            {
+                // page_insert 失败时旧映射保持不变，释放刚分配的页面。
+                free_page(new_page);
+                return -E_NO_MEM;
+            }
+        }
+        else
+        {
+            // 3.2 当前进程是最后一个使用者：直接恢复写权限即可。
+            *ptep = (*ptep | PTE_W) & ~PTE_COW;
+            tlb_invalidate(mm->pgdir, la);
+        }
+
+        return 0;
     }
 
     // 4. PTE 尚未建立：按 VMA 权限做按需分配。
