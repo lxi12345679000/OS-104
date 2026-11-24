@@ -97,6 +97,10 @@ void print_regs(struct pushregs *gpr)
 
 extern struct mm_struct *check_mm_struct;
 
+/*
+ * 2412634 罗茜：处理 S 态中断。
+ * 时钟中断负责设置下一次事件和调度标志，软件中断负责清除挂起位。
+ */
 void interrupt_handler(struct trapframe *tf)
 {
     uintptr_t interrupt_flag = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
@@ -108,6 +112,7 @@ void interrupt_handler(struct trapframe *tf)
         ticks++;
         if (ticks % TICK_NUM == 0)
         {
+            // 2412634：每 100 个时钟 tick 请求一次重新调度。
             if (current != NULL)
             {
                 current->need_resched = 1;
@@ -126,6 +131,10 @@ void interrupt_handler(struct trapframe *tf)
     }
 }
 
+/*
+ * 2412634 罗茜：把 RISC-V 的缺页原因转换为统一软件错误码。
+ * error_code 同时描述用户/内核、读/写以及页表项是否已经存在。
+ */
 static uint32_t
 page_fault_error_code(struct trapframe *tf)
 {
@@ -141,6 +150,8 @@ page_fault_error_code(struct trapframe *tf)
 
     if (current != NULL && current->mm != NULL)
     {
+        // 2412634：COW 缺页时 PTE 仍然有效，只是写保护，
+        // 因此需要单独设置 PFAULT_PRESENT。
         pte_t *ptep = get_pte(current->mm->pgdir, tf->tval, 0);
         if (ptep != NULL && (*ptep & PTE_V))
         {
@@ -150,6 +161,10 @@ page_fault_error_code(struct trapframe *tf)
     return error_code;
 }
 
+/*
+ * 2412634 罗茜：统一缺页入口。
+ * 普通按需分页和 COW 都由贺佳怡实现的 do_pgfault 处理。
+ */
 static void
 handle_page_fault(struct trapframe *tf)
 {
@@ -161,6 +176,7 @@ handle_page_fault(struct trapframe *tf)
 
     bool in_kernel = trap_in_kernel(tf);
     struct mm_struct *mm = current->mm;
+    // 2412634：tval 是触发缺页的虚拟地址，error_code 描述访问类型。
     int ret = do_pgfault(mm, page_fault_error_code(tf), tf->tval);
     if (ret == 0)
     {
@@ -173,6 +189,7 @@ handle_page_fault(struct trapframe *tf)
         panic("page fault in kernel mode: %e", ret);
     }
 
+    // 2412634：用户态非法访问只结束当前进程，不能让内核整体崩溃。
     cprintf("killed by kernel: user page fault, ret=%e\n", ret);
     do_exit(-E_KILLED);
 }
@@ -183,6 +200,7 @@ void exception_handler(struct trapframe *tf)
     switch (tf->cause)
     {
     case CAUSE_USER_ECALL:
+        // 2412634：ecall 是 4 字节指令，返回前必须跳过它。
         tf->epc += 4;
         syscall();
         break;
@@ -194,6 +212,7 @@ void exception_handler(struct trapframe *tf)
         print_trapframe(tf);
         if (current != NULL && !trap_in_kernel(tf))
         {
+            // 2412634：其他用户态异常终止当前进程，保留内核继续运行。
             cprintf("killed by kernel: unhandled user exception\n");
             do_exit(-E_KILLED);
         }

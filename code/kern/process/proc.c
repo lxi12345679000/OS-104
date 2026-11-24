@@ -286,6 +286,11 @@ put_pgdir(struct mm_struct *mm)
 
 
 //lab5 function4 2412634
+/*
+ * 2412634 罗茜：回收一个僵尸子进程。
+ * 父进程读取退出码后，从哈希表和进程树中摘除该子进程，
+ * 最后释放内核栈和进程控制块。
+ */
 static int
 reap_child(struct proc_struct *proc, int *code_store)
 {
@@ -297,6 +302,7 @@ reap_child(struct proc_struct *proc, int *code_store)
     bool intr_flag;
     local_intr_save(intr_flag);
     {
+        // 2412634：摘链必须关中断，避免进程树与哈希表出现半更新状态。
         unhash_proc(proc);
         remove_links(proc);
     }
@@ -307,9 +313,14 @@ reap_child(struct proc_struct *proc, int *code_store)
     return 0;
 }
 
+/*
+ * 2412634 罗茜：等待指定子进程或任意子进程。
+ * pid == 0 表示任意子进程；成功回收后返回 0。
+ */
 int
 do_wait(int pid, int *code_store)
 {
+    // 2412634：退出码将写入用户空间，先验证用户指针可写。
     if (code_store != NULL &&
         !user_mem_check(current->mm, (uintptr_t)code_store,
                         sizeof(int), 1))
@@ -326,6 +337,7 @@ repeat:
 
     if (pid != 0)
     {
+        // 2412634：指定 pid 时，只允许等待当前进程的直属子进程。
         proc = find_proc(pid);
         if (proc != NULL && proc->parent == current)
         {
@@ -338,6 +350,7 @@ repeat:
     }
     else
     {
+        // 2412634：pid 为 0，遍历当前进程的所有子进程。
         for (proc = current->cptr; proc != NULL; proc = proc->optr)
         {
             has_child = 1;
@@ -350,12 +363,14 @@ repeat:
 
     if (!has_child)
     {
+        // 2412634：没有符合条件的子进程，立即返回错误。
         return -E_BAD_PROC;
     }
 
     bool intr_flag;
     local_intr_save(intr_flag);
     {
+        // 2412634：有子进程但尚未退出时，父进程睡眠等待子进程唤醒。
         current->state = PROC_SLEEPING;
         current->wait_state = WT_CHILD;
     }
@@ -364,6 +379,7 @@ repeat:
     schedule();
     if (current->flags & PF_EXITING)
     {
+        // 2412634：等待期间父进程被杀死，应转入退出流程。
         do_exit(-E_KILLED);
     }
     goto repeat;
@@ -376,6 +392,10 @@ found:
     return reap_child(proc, code_store);
 }
 
+/*
+ * 2412634 罗茜：当前进程退出。
+ * 当前进程先释放用户地址空间，再成为僵尸进程，等待父进程回收 PCB 和内核栈。
+ */
 int
 do_exit(int error_code)
 {
@@ -388,10 +408,12 @@ do_exit(int error_code)
     current->mm = NULL;
     if (mm != NULL)
     {
+        // 2412634：先切回内核页表，再释放即将不用的用户页表。
         lsatp(boot_pgdir_pa);
         flush_tlb();
         if (mm_count_dec(mm) == 0)
         {
+            // 2412634：最后一个使用者退出时才真正销毁地址空间。
             exit_mmap(mm);
             put_pgdir(mm);
             mm_destroy(mm);
@@ -402,6 +424,7 @@ do_exit(int error_code)
     struct proc_struct *proc;
     local_intr_save(intr_flag);
     {
+        // 2412634：先进入僵尸态并保存退出码，确保父进程能看到完整状态。
         current->flags |= PF_EXITING;
         current->exit_code = error_code;
         current->state = PROC_ZOMBIE;
@@ -409,11 +432,13 @@ do_exit(int error_code)
         proc = current->parent;
         if (proc != NULL && (proc->wait_state & WT_CHILD))
         {
+            // 2412634：父进程正在等待子进程退出，唤醒它执行回收。
             wakeup_proc(proc);
         }
 
         while ((proc = current->cptr) != NULL)
         {
+            // 2412634：把孤儿子进程挂到 initproc 下，避免无人管理。
             current->cptr = proc->optr;
             proc->yptr = NULL;
             if ((proc->optr = initproc->cptr) != NULL)
@@ -432,10 +457,15 @@ do_exit(int error_code)
     }
     local_intr_restore(intr_flag);
 
+    // 2412634：僵尸进程不再占用 CPU，立即切换到其他进程。
     schedule();
     panic("do_exit returned for pid %d", current->pid);
 }
 
+/*
+ * 2412634 罗茜：主动让出 CPU。
+ * 这里只设置调度标志，真正切换由 trap 返回路径调用 schedule()。
+ */
 int
 do_yield(void)
 {
@@ -443,6 +473,10 @@ do_yield(void)
     return 0;
 }
 
+/*
+ * 2412634 罗茜：向目标进程发送退出请求。
+ * 目标进程会在下一次返回用户态之前执行 do_exit()。
+ */
 int
 do_kill(int pid)
 {
@@ -461,6 +495,7 @@ do_kill(int pid)
     if (proc->state == PROC_SLEEPING ||
         (proc->wait_state & WT_INTERRUPTED))
     {
+        // 2412634：睡眠或可中断等待中的进程需要被唤醒，才能处理退出请求。
         wakeup_proc(proc);
     }
     return 0;

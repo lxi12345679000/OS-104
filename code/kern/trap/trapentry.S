@@ -70,11 +70,11 @@ _save_context:
     LOCAL _save_kernel_sp
 
     #lab3 2412634：填写 trap 上下文恢复，兼容用户态和内核态返回
-    # Restore sstatus and sepc before restoring general-purpose registers.
+    # 2412634：先恢复状态寄存器和异常返回地址，再恢复通用寄存器。
     LOAD s1, 32*REGBYTES(sp)
     LOAD s2, 33*REGBYTES(sp)
 
-    # Returning to U mode: preserve the kernel stack top in sscratch.
+    # 2412634：若将要返回用户态，则把内核栈顶保存在 sscratch 中。
     andi s0, s1, SSTATUS_SPP
     bnez s0, _restore_context
 _save_kernel_sp:
@@ -116,14 +116,15 @@ _restore_context:
     LOAD x30, 30*REGBYTES(sp)
     LOAD x31, 31*REGBYTES(sp)
 
-    # For a user trap this restores the user stack; otherwise it restores
-    # the interrupted kernel stack.
+    # 2412634：用户态 trap 恢复用户栈，内核态 trap 恢复原内核栈；
+    # sp 必须最后恢复，否则之前的 LOAD 会失去 trapframe 基址。
     LOAD x2, 2*REGBYTES(sp)
     .endm
 
     .globl __alltraps
     .align 2
 __alltraps:
+    # 2412634：保存完整现场后，把 trapframe 地址作为参数交给 C 的 trap()。
     SAVE_ALL
 
     mv a0, sp
