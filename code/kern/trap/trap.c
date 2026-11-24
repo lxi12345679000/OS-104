@@ -15,6 +15,8 @@
 #include <sched.h>
 #include <sync.h>
 #include <sbi.h>
+#include <pmm.h>
+#include <proc.h>
 
 #define TICK_NUM 100
 
@@ -95,9 +97,109 @@ void print_regs(struct pushregs *gpr)
 
 extern struct mm_struct *check_mm_struct;
 
-//lab3 请补充你在lab3中的代码
+void interrupt_handler(struct trapframe *tf)
+{
+    uintptr_t interrupt_flag = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
+    uintptr_t irq = tf->cause & ~interrupt_flag;
 
-//lab5 function1 YOUR CODE update exception_handler
+    if (irq == IRQ_S_TIMER)
+    {
+        clock_set_next_event();
+        ticks++;
+        if (ticks % TICK_NUM == 0)
+        {
+            if (current != NULL)
+            {
+                current->need_resched = 1;
+            }
+            print_ticks();
+        }
+    }
+    else if (irq == IRQ_S_SOFT)
+    {
+        clear_csr(sip, SIP_SSIP);
+    }
+    else
+    {
+        cprintf("unknown interrupt: cause %d\n", (int)irq);
+        print_trapframe(tf);
+    }
+}
+
+static uint32_t
+page_fault_error_code(struct trapframe *tf)
+{
+    uint32_t error_code = 0;
+    if (!trap_in_kernel(tf))
+    {
+        error_code |= PFAULT_USER;
+    }
+    if (tf->cause == CAUSE_STORE_PAGE_FAULT)
+    {
+        error_code |= PFAULT_WRITE;
+    }
+
+    if (current != NULL && current->mm != NULL)
+    {
+        pte_t *ptep = get_pte(current->mm->pgdir, tf->tval, 0);
+        if (ptep != NULL && (*ptep & PTE_V))
+        {
+            error_code |= PFAULT_PRESENT;
+        }
+    }
+    return error_code;
+}
+
+static void
+handle_page_fault(struct trapframe *tf)
+{
+    if (current == NULL)
+    {
+        print_trapframe(tf);
+        panic("page fault before process initialization");
+    }
+
+    bool in_kernel = trap_in_kernel(tf);
+    struct mm_struct *mm = current->mm;
+    int ret = do_pgfault(mm, page_fault_error_code(tf), tf->tval);
+    if (ret == 0)
+    {
+        return;
+    }
+
+    print_trapframe(tf);
+    if (in_kernel)
+    {
+        panic("page fault in kernel mode: %e", ret);
+    }
+
+    cprintf("killed by kernel: user page fault, ret=%e\n", ret);
+    do_exit(-E_KILLED);
+}
+
+//lab5 function1 2412634
+void exception_handler(struct trapframe *tf)
+{
+    switch (tf->cause)
+    {
+    case CAUSE_USER_ECALL:
+        tf->epc += 4;
+        syscall();
+        break;
+    case CAUSE_LOAD_PAGE_FAULT:
+    case CAUSE_STORE_PAGE_FAULT:
+        handle_page_fault(tf);
+        break;
+    default:
+        print_trapframe(tf);
+        if (current != NULL && !trap_in_kernel(tf))
+        {
+            cprintf("killed by kernel: unhandled user exception\n");
+            do_exit(-E_KILLED);
+        }
+        panic("unhandled exception in kernel mode");
+    }
+}
 
 
 static inline void trap_dispatch(struct trapframe *tf)
