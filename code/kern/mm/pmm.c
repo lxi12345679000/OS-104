@@ -318,11 +318,154 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
 }
 
 
-//lab5 function3 YOUR CODE 
+//lab5 function3 2412105
+// copy_range - 把 from 地址空间 [start, end) 的映射复制到 to
+//
+// share == false：深复制，每个页面分配新物理页，引用计数为 1。
+// share == true ：写时复制。共享原物理页并增加引用计数，把可写页面的
+//                 两侧 PTE 都改为只读并打上 PTE_COW。
+//
+// 2412105：任何一步失败都要回滚：先撤销 to 中已经建立的映射
+// （unmap_range 会同步减少页面引用计数），再恢复 from 中因本次 fork
+// 而新加上 COW 标记、且已经不再共享的页面。
+int
+copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share)
+{
+    assert(start % PGSIZE == 0);
+    assert(end % PGSIZE == 0);
+    assert(start < end);
+    assert(USER_ACCESS(start, end));
+
+    uintptr_t addr;
+
+    for (addr = start; addr < end; addr += PGSIZE)
+    {
+        pte_t *src_ptep = get_pte(from, addr, 0);
+
+        // 父进程允许惰性分配，未建立的页不复制。
+        if (src_ptep == NULL || !(*src_ptep & PTE_V))
+        {
+            continue;
+        }
+
+        struct Page *src_page = pte2page(*src_ptep);
+        uint32_t perm = *src_ptep & 0x3FF;
+
+        if (share)
+        {
+            // 2412105：可写页才需要写时复制；只读页直接共享。
+            if (perm & (PTE_W | PTE_COW))
+            {
+                perm = (perm | PTE_COW) & ~PTE_W;
+            }
+
+            if (page_insert(to, src_page, addr, perm) != 0)
+            {
+                goto failed;
+            }
+
+            // 父进程一侧也改为只读 + COW，双方谁先写谁复制。
+            if (perm & PTE_COW)
+            {
+                *src_ptep = (*src_ptep | PTE_COW) & ~PTE_W;
+                tlb_invalidate(from, addr);
+            }
+        }
+        else
+        {
+            struct Page *dst_page = alloc_page();
+
+            if (dst_page == NULL)
+            {
+                goto failed;
+            }
+
+            memcpy(KADDR(page2pa(dst_page)),
+                   KADDR(page2pa(src_page)),
+                   PGSIZE);
+
+            // 深复制得到的是私有页，不应带 COW 标记。
+            perm &= ~PTE_COW;
+
+            if (page_insert(to, dst_page, addr, perm) != 0)
+            {
+                free_page(dst_page);
+                goto failed;
+            }
+        }
+    }
+
+    return 0;
+
+failed:
+    // 撤销 to 中 [start, addr) 已经建立的全部映射。
+    unmap_range(to, start, addr);
+
+    if (share)
+    {
+        // 2412105：若某个页面在 fork 前只被父进程引用，本次回滚后引用
+        // 计数会回到 1，此时必须把父进程 PTE 恢复为可写。
+        // 若原本就被多个进程共享（ref > 1），则保持 COW 状态不变。
+        uintptr_t rollback_addr;
+
+        for (rollback_addr = start;
+             rollback_addr < addr;
+             rollback_addr += PGSIZE)
+        {
+            pte_t *src_ptep = get_pte(from, rollback_addr, 0);
+
+            if (src_ptep != NULL && (*src_ptep & PTE_V)
+                && (*src_ptep & PTE_COW))
+            {
+                struct Page *page = pte2page(*src_ptep);
+
+                if (page_ref(page) == 1)
+                {
+                    *src_ptep = (*src_ptep | PTE_W) & ~PTE_COW;
+                    tlb_invalidate(from, rollback_addr);
+                }
+            }
+        }
+    }
+
+    return -E_NO_MEM;
+}
 
 
 //lab4 请补充你在lab4中的代码
+// page_insert - map a physical page to a linear address
+int
+page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm)
+{
+    pte_t *ptep = get_pte(pgdir, la, 1);
 
+    if (ptep == NULL)
+    {
+        return -E_NO_MEM;
+    }
+
+    page_ref_inc(page);
+
+    if (*ptep & PTE_V)
+    {
+        struct Page *old_page = pte2page(*ptep);
+
+        if (old_page == page)
+        {
+            page_ref_dec(page);
+        }
+        else
+        {
+            page_remove_pte(pgdir, la, ptep);
+        }
+    }
+
+    *ptep = pte_create(page2ppn(page), perm);
+
+    tlb_invalidate(pgdir, la);
+
+    return 0;
+}
 
 // invalidate a TLB entry, but only if the page tables being
 // edited are the ones currently in use by the processor.

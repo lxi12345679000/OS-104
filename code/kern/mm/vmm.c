@@ -202,8 +202,132 @@ out:
     return ret;
 }
 
-//lab5 function3 YOUR CODE 
+//lab5 function3 2412105
+// dup_mmap - 复制 from 地址空间中的全部 VMA 到 to
+//
+// 2412105：普通 fork 采用深复制，每个页面由 copy_range(..., share=false)
+// 分配新物理页。失败时由调用方 copy_mm 统一回收已经插入的 VMA 和页面，
+// 保证不会留下半完成的地址空间。
+int
+dup_mmap(struct mm_struct *to, struct mm_struct *from)
+{
+    assert(to != NULL && from != NULL);
+    assert(to->pgdir != NULL && from->pgdir != NULL);
 
+    list_entry_t *list = &(from->mmap_list);
+    list_entry_t *le = list;
+
+    while ((le = list_next(le)) != list)
+    {
+        struct vma_struct *vma = le2vma(le, list_link);
+
+        // 保持 VMA 的区间和权限（含 VM_STACK），插入顺序与原链表一致。
+        struct vma_struct *new_vma =
+            vma_create(vma->vm_start, vma->vm_end, vma->vm_flags);
+
+        if (new_vma == NULL)
+        {
+            return -E_NO_MEM;
+        }
+
+        insert_vma_struct(to, new_vma);
+
+        // share == false：深复制物理页。
+        if (copy_range(to->pgdir, from->pgdir,
+                       vma->vm_start, vma->vm_end, 0) != 0)
+        {
+            return -E_NO_MEM;
+        }
+    }
+
+    return 0;
+}
+
+//lab5 function3 2412105
+// do_pgfault - 处理普通按需分页缺页
+//
+// 2412105：调用方（trap.c）已经把异常原因翻译为软件错误码，
+// PFAULT_WRITE 表示本次访问是写。
+//
+// 返回 0 表示缺页已处理，可以返回用户态继续执行；负值表示失败。
+int
+do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
+{
+    if (mm == NULL || mm->pgdir == NULL)
+    {
+        return -E_INVAL;
+    }
+
+    // 1. 地址必须落在当前地址空间的某个 VMA 内。
+    struct vma_struct *vma = find_vma(mm, addr);
+
+    if (vma == NULL || addr < vma->vm_start || addr >= vma->vm_end)
+    {
+        return -E_INVAL;
+    }
+
+    bool write = (error_code & PFAULT_WRITE) != 0;
+
+    // 2. VMA 权限检查：写缺页必须有 VM_WRITE，读缺页必须有 VM_READ。
+    if (write && !(vma->vm_flags & VM_WRITE))
+    {
+        return -E_INVAL;
+    }
+
+    if (!write && !(vma->vm_flags & VM_READ))
+    {
+        return -E_INVAL;
+    }
+
+    uintptr_t la = ROUNDDOWN(addr, PGSIZE);
+    pte_t *ptep = get_pte(mm->pgdir, la, 1);
+
+    if (ptep == NULL)
+    {
+        return -E_NO_MEM;
+    }
+
+    // 3. PTE 已经有效：普通 fork 阶段不应出现这种情况。
+    if (*ptep & PTE_V)
+    {
+        return -E_INVAL;
+    }
+
+    // 4. PTE 尚未建立：按 VMA 权限做按需分配。
+    uint32_t perm = PTE_U;
+
+    if (vma->vm_flags & VM_READ)
+    {
+        perm |= PTE_R;
+    }
+
+    if (vma->vm_flags & VM_WRITE)
+    {
+        perm |= PTE_R | PTE_W;
+    }
+
+    if (vma->vm_flags & VM_EXEC)
+    {
+        perm |= PTE_X;
+    }
+
+    struct Page *page = alloc_page();
+
+    if (page == NULL)
+    {
+        return -E_NO_MEM;
+    }
+
+    memset(KADDR(page2pa(page)), 0, PGSIZE);
+
+    if (page_insert(mm->pgdir, page, la, perm) != 0)
+    {
+        free_page(page);
+        return -E_NO_MEM;
+    }
+
+    return 0;
+}
 
 
 void exit_mmap(struct mm_struct *mm)
