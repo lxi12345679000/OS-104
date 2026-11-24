@@ -83,8 +83,79 @@ void forkrets(struct trapframe *tf);
 void switch_to(struct context *from, struct context *to);
 
 //lab4 请补充你在lab4中的代码
+//lab5 function2 2412896
+static int init_main(void *arg);
+static int user_main(void *arg);
+static int kernel_execve(const char *name, unsigned char *binary, size_t size);
+static struct proc_struct *alloc_proc(void);
 
-//lab5 function2 YOUR CODE update alloc_proc
+/* proc_init - 建立 idleproc，并通过 kernel_thread 创建 init_main */
+void
+proc_init(void) {
+    int i;
+
+    list_init(&proc_list);
+    for (i = 0; i < HASH_LIST_SIZE; i ++) {
+        list_init(hash_list + i);
+    }
+
+    if ((idleproc = alloc_proc()) == NULL) {
+        panic("cannot alloc idleproc.\n");
+    }
+
+    idleproc->pid = 0;
+    idleproc->state = PROC_RUNNABLE;
+    idleproc->kstack = (uintptr_t)bootstack;
+    idleproc->need_resched = 1;
+    set_proc_name(idleproc, "idle");
+
+    nr_process ++;
+    current = idleproc;
+
+    int pid = kernel_thread(init_main, NULL, 0);
+    if (pid <= 0) {
+        panic("create init_main failed.\n");
+    }
+
+    initproc = find_proc(pid);
+    if (initproc == NULL) {
+        panic("find initproc failed.\n");
+    }
+    set_proc_name(initproc, "init");
+}
+
+//lab5 function2 2412896 update alloc_proc
+static struct proc_struct *
+alloc_proc(void) {
+    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
+    if (proc == NULL) {
+        return NULL;
+    }
+
+    proc->state = PROC_UNINIT;
+    proc->pid = -1;
+    proc->runs = 0;
+    proc->kstack = 0;
+    proc->need_resched = 0;
+    proc->parent = NULL;
+    proc->mm = NULL;
+
+    memset(&proc->context, 0, sizeof(struct context));
+
+    proc->tf = NULL;
+    proc->pgdir = boot_pgdir_pa;
+    proc->flags = 0;
+    memset(proc->name, 0, sizeof(proc->name));
+
+    proc->exit_code = 0;
+    proc->wait_state = 0;
+    proc->cptr = proc->optr = proc->yptr = NULL;
+
+    list_init(&(proc->list_link));
+    list_init(&(proc->hash_link));
+
+    return proc;
+}
 
 
 // set_proc_name - set the name of proc
@@ -228,7 +299,21 @@ find_proc(int pid)
     return NULL;
 }
 
-//lab5 function2 YOUR CODE update kernel_thread
+//lab5 function2 2412896 update kernel_thread
+int
+kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags) {
+    struct trapframe tf;
+    memset(&tf, 0, sizeof(struct trapframe));
+
+    tf.gpr.s0 = (uintptr_t)fn;
+    tf.gpr.s1 = (uintptr_t)arg;
+    tf.epc = (uintptr_t)kernel_thread_entry;
+
+    uintptr_t status = read_csr(sstatus);
+    tf.status = (status | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
+
+    return do_fork(clone_flags, 0, &tf);
+}
 
 
 // setup_kstack - alloc pages with size KSTACKPAGE as process kernel stack
@@ -278,7 +363,28 @@ put_pgdir(struct mm_struct *mm)
 
 
 
-//lab5 function2 YOUR CODE
+//lab5 function2 2412896 init_main
+static int
+init_main(void *arg) {
+    size_t nr_free_pages_store = nr_free_pages();
+    size_t kernel_allocated_store = kallocated();
+
+    int pid = kernel_thread(user_main, NULL, 0);
+    if (pid <= 0) {
+        panic("create user_main failed.\n");
+    }
+
+    int ret;
+    while ((ret = do_wait(0, NULL)) >= 0) {
+        schedule();
+    }
+
+    cprintf("all user-mode processes have quit.\n");
+    assert(nr_free_pages_store == nr_free_pages());
+    assert(kernel_allocated_store == kallocated());
+    cprintf("init check memory pass.\n");
+    return 0;
+}
 
 
 //lab5 function3 YOUR CODE
@@ -308,7 +414,45 @@ put_pgdir(struct mm_struct *mm)
 #define KERNEL_EXECVE2(x, xstart, xsize) __KERNEL_EXECVE2(x, xstart, xsize)
 
 
-//lab5 function2 YOUR CODE
+//lab5 function2 2412896
+static int
+user_main(void *arg) {
+#ifdef TEST
+    KERNEL_EXECVE2(TEST, TESTSTART, TESTSIZE);
+#else
+    KERNEL_EXECVE(exit);
+#endif
+    panic("user_main execve failed.\n");
+}
+
+/* kernel_execve - 构造用户态 TrapFrame，调用 do_execve 后跳入 __trapret */
+static int
+kernel_execve(const char *name, unsigned char *binary, size_t size) {
+    int ret = 0;
+    size_t len = strlen(name);
+    struct trapframe *tf = current->tf;
+    uintptr_t trapframe_addr = (uintptr_t)tf;
+
+    memset(tf, 0, sizeof(struct trapframe));
+    tf->gpr.a0 = 0;
+    tf->gpr.sp = USTACKTOP;
+    tf->epc = 0;
+    tf->status = (read_csr(sstatus) & ~SSTATUS_SPP & ~SSTATUS_SIE) |
+                 SSTATUS_SPIE;
+
+    ret = do_execve(name, len, binary, size);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* 复用异常返回路径：恢复刚构造的 TrapFrame 并 sret 到用户态 */
+    asm volatile(
+        "mv sp, %0\n"
+        "j __trapret\n"
+        :
+        : "r"(trapframe_addr));
+    return ret;
+}
 
 
 
