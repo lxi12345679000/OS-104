@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
+#include <riscv.h>
 
 /* ------------- process/thread mechanism design&implementation -------------
 (an simplified Linux process/thread mechanism )
@@ -284,7 +285,186 @@ put_pgdir(struct mm_struct *mm)
 //lab5 function3 YOUR CODE
 
 
-//lab5 function4 YOUR CODE
+//lab5 function4 2412634
+static int
+reap_child(struct proc_struct *proc, int *code_store)
+{
+    if (code_store != NULL)
+    {
+        *code_store = proc->exit_code;
+    }
+
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    {
+        unhash_proc(proc);
+        remove_links(proc);
+    }
+    local_intr_restore(intr_flag);
+
+    put_kstack(proc);
+    kfree(proc);
+    return 0;
+}
+
+int
+do_wait(int pid, int *code_store)
+{
+    if (code_store != NULL &&
+        !user_mem_check(current->mm, (uintptr_t)code_store,
+                        sizeof(int), 1))
+    {
+        return -E_INVAL;
+    }
+
+    struct proc_struct *proc;
+    bool has_child;
+
+repeat:
+    proc = NULL;
+    has_child = 0;
+
+    if (pid != 0)
+    {
+        proc = find_proc(pid);
+        if (proc != NULL && proc->parent == current)
+        {
+            has_child = 1;
+            if (proc->state == PROC_ZOMBIE)
+            {
+                goto found;
+            }
+        }
+    }
+    else
+    {
+        for (proc = current->cptr; proc != NULL; proc = proc->optr)
+        {
+            has_child = 1;
+            if (proc->state == PROC_ZOMBIE)
+            {
+                goto found;
+            }
+        }
+    }
+
+    if (!has_child)
+    {
+        return -E_BAD_PROC;
+    }
+
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    {
+        current->state = PROC_SLEEPING;
+        current->wait_state = WT_CHILD;
+    }
+    local_intr_restore(intr_flag);
+
+    schedule();
+    if (current->flags & PF_EXITING)
+    {
+        do_exit(-E_KILLED);
+    }
+    goto repeat;
+
+found:
+    if (proc == idleproc || proc == initproc)
+    {
+        panic("cannot wait idleproc or initproc");
+    }
+    return reap_child(proc, code_store);
+}
+
+int
+do_exit(int error_code)
+{
+    if (current == idleproc || current == initproc)
+    {
+        panic("idleproc or initproc requested exit");
+    }
+
+    struct mm_struct *mm = current->mm;
+    current->mm = NULL;
+    if (mm != NULL)
+    {
+        lsatp(boot_pgdir_pa);
+        flush_tlb();
+        if (mm_count_dec(mm) == 0)
+        {
+            exit_mmap(mm);
+            put_pgdir(mm);
+            mm_destroy(mm);
+        }
+    }
+
+    bool intr_flag;
+    struct proc_struct *proc;
+    local_intr_save(intr_flag);
+    {
+        current->flags |= PF_EXITING;
+        current->exit_code = error_code;
+        current->state = PROC_ZOMBIE;
+
+        proc = current->parent;
+        if (proc != NULL && (proc->wait_state & WT_CHILD))
+        {
+            wakeup_proc(proc);
+        }
+
+        while ((proc = current->cptr) != NULL)
+        {
+            current->cptr = proc->optr;
+            proc->yptr = NULL;
+            if ((proc->optr = initproc->cptr) != NULL)
+            {
+                initproc->cptr->yptr = proc;
+            }
+            proc->parent = initproc;
+            initproc->cptr = proc;
+
+            if (proc->state == PROC_ZOMBIE &&
+                (initproc->wait_state & WT_CHILD))
+            {
+                wakeup_proc(initproc);
+            }
+        }
+    }
+    local_intr_restore(intr_flag);
+
+    schedule();
+    panic("do_exit returned for pid %d", current->pid);
+}
+
+int
+do_yield(void)
+{
+    current->need_resched = 1;
+    return 0;
+}
+
+int
+do_kill(int pid)
+{
+    struct proc_struct *proc = find_proc(pid);
+    if (proc == NULL || proc == idleproc || proc == initproc ||
+        proc->state == PROC_ZOMBIE)
+    {
+        return -E_INVAL;
+    }
+    if (proc->flags & PF_EXITING)
+    {
+        return -E_KILLED;
+    }
+
+    proc->flags |= PF_EXITING;
+    if (proc->state == PROC_SLEEPING ||
+        (proc->wait_state & WT_INTERRUPTED))
+    {
+        wakeup_proc(proc);
+    }
+    return 0;
+}
 
 
 #define __KERNEL_EXECVE(name, binary, size) ({           \
