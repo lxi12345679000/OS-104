@@ -5,7 +5,7 @@
 
 //lab2 请补充你在lab2中的代码
 //lab2 function1 2412896
-static free_area_t free_area;
+free_area_t free_area;
 
 #define free_list (free_area.free_list)
 #define nr_free (free_area.nr_free)
