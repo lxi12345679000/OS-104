@@ -361,9 +361,70 @@ put_pgdir(struct mm_struct *mm)
     free_page(kva2page(mm->pgdir));
 }
 
-//lab5 function3 YOUR CODE update copy_mm
+//lab5 function3 2412105
+// copy_mm - 为 fork 出来的进程准备地址空间
+//
+// 2412105：
+//   * 内核线程没有用户地址空间，继续使用内核页表；
+//   * CLONE_VM 时共享父进程的 mm（用于线程）；
+//   * 普通 fork 时新建 mm + 页表，并用 dup_mmap 做写时复制。
+static int
+copy_mm(uint32_t clone_flags, struct proc_struct *proc)
+{
+    struct mm_struct *mm, *oldmm = current->mm;
 
+    // 1. 内核线程：沿用它现有的内核页表。
+    if (oldmm == NULL)
+    {
+        proc->mm = NULL;
+        proc->pgdir = boot_pgdir_pa;
+        return 0;
+    }
 
+    // 2. CLONE_VM：父子共享同一地址空间，只增加 mm 引用计数。
+    if (clone_flags & CLONE_VM)
+    {
+        mm_count_inc(oldmm);
+        proc->mm = oldmm;
+        proc->pgdir = current->pgdir;
+        return 0;
+    }
+
+    // 3. 分配新的 mm 和独立页表（setup_pgdir 会先复制内核映射）。
+    if ((mm = mm_create()) == NULL)
+    {
+        return -E_NO_MEM;
+    }
+
+    if (setup_pgdir(mm) != 0)
+    {
+        mm_destroy(mm);
+        return -E_NO_MEM;
+    }
+
+    // 4. 复制 VMA 链表并建立 COW 映射。
+    lock_mm(oldmm);
+    int ret = dup_mmap(mm, oldmm);
+    unlock_mm(oldmm);
+
+    if (ret != 0)
+    {
+        // 2412105：dup_mmap 失败时可能留下部分 VMA/页面，
+        // 这里统一撤销映射、释放页表并销毁 mm，避免半成品地址空间。
+        // 此时 mm_count 仍为 0，满足 exit_mmap 的断言。
+        exit_mmap(mm);
+        put_pgdir(mm);
+        mm_destroy(mm);
+        return ret;
+    }
+
+    // 5. 新地址空间正式交给子进程。
+    mm_count_inc(mm);
+    proc->mm = mm;
+    // proc_run 用 satp 装载页表，必须存物理地址。
+    proc->pgdir = PADDR(mm->pgdir);
+    return 0;
+}
 
 //lab5 function2 2412896 init_main
 static int
@@ -389,8 +450,85 @@ init_main(void *arg) {
 }
 
 
-//lab5 function3 YOUR CODE
+//lab5 function3 2412105
+// copy_thread - 复制 trapframe 和切换上下文
+static void
+copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
+{
+    // 新进程的 trapframe 放在内核栈顶。
+    proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE) - 1;
+    *(proc->tf) = *tf;
 
+    // 2412105：子进程从 fork 返回 0。
+    proc->tf->gpr.a0 = 0;
+    // 用户进程沿用父进程的用户栈指针；内核线程使用自身 trapframe 作为栈顶。
+    proc->tf->gpr.sp = (esp == 0) ? (uintptr_t)proc->tf : esp;
+
+    // 第一次被调度时从 forkret 开始，再经 forkrets 恢复 trapframe。
+    proc->context.ra = (uintptr_t)forkret;
+    proc->context.sp = (uintptr_t)proc->tf;
+}
+
+//lab5 function3 2412105
+// do_fork - 复制当前进程，创建子进程
+int
+do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
+{
+    int ret = -E_NO_FREE_PROC;
+    struct proc_struct *proc;
+
+    if (nr_process >= MAX_PROCESS)
+    {
+        goto fork_out;
+    }
+
+    ret = -E_NO_MEM;
+
+    // 1. 分配 PCB。
+    if ((proc = alloc_proc()) == NULL)
+    {
+        goto fork_out;
+    }
+    proc->parent = current;
+
+    // 2. 分配内核栈。
+    if (setup_kstack(proc) != 0)
+    {
+        goto bad_fork_cleanup_proc;
+    }
+
+    // 3. 复制/共享地址空间。
+    if (copy_mm(clone_flags, proc) != 0)
+    {
+        goto bad_fork_cleanup_kstack;
+    }
+
+    // 4. 复制上下文和 trapframe。
+    copy_thread(proc, stack, tf);
+
+    // 5. 在关中断临界区内分配 pid 并挂入全局结构。
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    {
+        proc->pid = get_pid();
+        hash_proc(proc);
+        set_links(proc);
+    }
+    local_intr_restore(intr_flag);
+
+    wakeup_proc(proc);
+    ret = proc->pid;
+
+fork_out:
+    return ret;
+
+bad_fork_cleanup_kstack:
+    put_kstack(proc);
+
+bad_fork_cleanup_proc:
+    kfree(proc);
+    goto fork_out;
+}
 
 //lab5 function4 2412634
 /*
