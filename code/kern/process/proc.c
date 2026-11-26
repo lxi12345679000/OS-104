@@ -87,6 +87,7 @@ void switch_to(struct context *from, struct context *to);
 static int init_main(void *arg);
 static int user_main(void *arg);
 static int kernel_execve(const char *name, unsigned char *binary, size_t size);
+static int load_icode(unsigned char *binary, size_t size);
 static struct proc_struct *alloc_proc(void);
 
 /* proc_init - 建立 idleproc，并通过 kernel_thread 创建 init_main */
@@ -451,6 +452,160 @@ kernel_execve(const char *name, unsigned char *binary, size_t size) {
         "j __trapret\n"
         :
         : "r"(trapframe_addr));
+    return ret;
+}
+
+/* do_execve - 回收旧地址空间，装入新程序并更新进程名 */
+int
+do_execve(const char *name, size_t len, unsigned char *binary, size_t size) {
+    (void)len;
+    struct mm_struct *mm = current->mm;
+    if (mm != NULL) {
+        /* 先切回内核页表，再回收旧用户地址空间 */
+        write_csr(satp, 0x8000000000000000 |
+                        (boot_pgdir_pa >> RISCV_PGSHIFT));
+        flush_tlb();
+        current->pgdir = boot_pgdir_pa;
+        current->mm = NULL;
+
+        exit_mmap(mm);
+        put_pgdir(mm);
+        mm_destroy(mm);
+    }
+
+    int ret = load_icode(binary, size);
+    if (ret != 0) {
+        return ret;
+    }
+    set_proc_name(current, name);
+    return 0;
+}
+
+/* load_icode - 解析 ELF，建立用户地址空间、用户栈并设置 TrapFrame */
+static int
+load_icode(unsigned char *binary, size_t size) {
+    if (current->mm != NULL) {
+        panic("load_icode: current->mm must be empty.\n");
+    }
+
+    int ret = -E_NO_MEM;
+    struct mm_struct *mm;
+    if ((mm = mm_create()) == NULL) {
+        goto bad_mm;
+    }
+    if (setup_pgdir(mm) != 0) {
+        goto bad_pgdir_cleanup_mm;
+    }
+
+    struct elfhdr *elf = (struct elfhdr *)binary;
+    if (size < sizeof(struct elfhdr) || elf->e_magic != ELF_MAGIC ||
+        elf->e_phentsize != sizeof(struct proghdr) ||
+        elf->e_phoff > size ||
+        elf->e_phnum > (size - elf->e_phoff) / sizeof(struct proghdr)) {
+        ret = -E_INVAL;
+        goto bad_elf_cleanup_pgdir;
+    }
+
+    struct proghdr *ph = (struct proghdr *)(binary + elf->e_phoff);
+    for (int i = 0; i < elf->e_phnum; i ++, ph ++) {
+        if (ph->p_type != ELF_PT_LOAD) {
+            continue;
+        }
+        if (ph->p_filesz > ph->p_memsz) {
+            ret = -E_INVAL;
+            goto bad_cleanup_mmap;
+        }
+
+        uint32_t vm_flags = 0;
+        uint32_t perm = PTE_U;
+        if (ph->p_flags & ELF_PF_R) {
+            vm_flags |= VM_READ;
+            perm |= PTE_R;
+        }
+        if (ph->p_flags & ELF_PF_W) {
+            vm_flags |= VM_WRITE;
+            perm |= PTE_W;
+        }
+        if (ph->p_flags & ELF_PF_X) {
+            vm_flags |= VM_EXEC;
+            perm |= PTE_X;
+        }
+
+        if ((ret = mm_map(mm, ph->p_va, ph->p_memsz, vm_flags, NULL)) != 0) {
+            goto bad_cleanup_mmap;
+        }
+
+        /* 先按 memsz 分配并清零，覆盖 .bss；再把文件内容拷进对应页 */
+        uintptr_t mem_end = ph->p_va + ph->p_memsz;
+        for (uintptr_t va = ROUNDDOWN(ph->p_va, PGSIZE);
+             va < mem_end; va += PGSIZE) {
+            struct Page *page = pgdir_alloc_page(mm->pgdir, va, perm);
+            if (page == NULL) {
+                ret = -E_NO_MEM;
+                goto bad_cleanup_mmap;
+            }
+            memset(page2kva(page), 0, PGSIZE);
+        }
+
+        size_t copied = 0;
+        while (copied < ph->p_filesz) {
+            uintptr_t va = ph->p_va + copied;
+            struct Page *page = get_page(mm->pgdir, va, NULL);
+            if (page == NULL) {
+                ret = -E_NO_MEM;
+                goto bad_cleanup_mmap;
+            }
+            size_t offset = va & (PGSIZE - 1);
+            size_t n = PGSIZE - offset;
+            if (n > ph->p_filesz - copied) {
+                n = ph->p_filesz - copied;
+            }
+            memcpy((char *)page2kva(page) + offset,
+                   binary + ph->p_offset + copied, n);
+            copied += n;
+        }
+    }
+
+    /* 用户栈：USTACKTOP 向下 USTACKSIZE，全部预先映射 */
+    uintptr_t stack_bottom = USTACKTOP - USTACKSIZE;
+    if ((ret = mm_map(mm, stack_bottom, USTACKSIZE,
+                      VM_READ | VM_WRITE | VM_STACK, NULL)) != 0) {
+        goto bad_cleanup_mmap;
+    }
+    for (int i = 1; i <= USTACKPAGE; i ++) {
+        struct Page *page = alloc_page();
+        if (page == NULL) {
+            ret = -E_NO_MEM;
+            goto bad_cleanup_mmap;
+        }
+        if (page_insert(mm->pgdir, page, USTACKTOP - i * PGSIZE,
+                        PTE_U | PTE_W | PTE_R) != 0) {
+            free_page(page);
+            ret = -E_NO_MEM;
+            goto bad_cleanup_mmap;
+        }
+    }
+
+    current->mm = mm;
+    current->pgdir = PADDR(mm->pgdir);
+    write_csr(satp, 0x8000000000000000 |
+                    (current->pgdir >> RISCV_PGSHIFT));
+    flush_tlb();
+
+    struct trapframe *tf = current->tf;
+    memset(tf, 0, sizeof(struct trapframe));
+    tf->gpr.sp = USTACKTOP;
+    tf->epc = elf->e_entry;
+    tf->status = (read_csr(sstatus) & ~SSTATUS_SPP) | SSTATUS_SPIE;
+    return 0;
+
+bad_cleanup_mmap:
+    exit_mmap(mm);
+bad_elf_cleanup_pgdir:
+    put_pgdir(mm);
+bad_pgdir_cleanup_mm:
+    mm_destroy(mm);
+bad_mm:
     return ret;
 }
 
