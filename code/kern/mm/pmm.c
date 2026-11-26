@@ -364,11 +364,16 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
                         pd0[PDX0(d0start)] = 0;
                     }
                 }
-                else
-                    free_pd0 = 0;
+
                 d0start += PTSIZE;
             } while (d0start != 0 && d0start < d1start + PDSIZE && d0start < end);
             // free level 0 page directory only when all pde0s in it are already invalid
+            for (int i = 0; i < NPTEENTRY; i++) {
+                if (pd0[i] & PTE_V) {
+                    free_pd0 = 0;
+                    break;
+                }
+            }
             if (free_pd0)
             {
                 free_page(pde2page(pde1));
@@ -727,4 +732,17 @@ static int get_pgtable_items(size_t left, size_t right, size_t start,
         return perm;
     }
     return 0;
+}
+
+// 2412634：打印当前 Sv39 根页表的有效项及低十位权限标志。
+void print_pgdir(void)
+{
+    uintptr_t root_ppn = read_csr(satp) & ((1UL << 44) - 1);
+    pde_t *root = KADDR(root_ppn << RISCV_PGSHIFT);
+    for (size_t i = 0; i < PGSIZE / sizeof(*root); i++) {
+        if (root[i] & PTE_V) {
+            cprintf("root[%d] pa %p flags 0x%x\n", (int)i,
+                    (void *)PDE_ADDR(root[i]), (unsigned)(root[i] & 0x3ff));
+        }
+    }
 }

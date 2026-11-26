@@ -1,4 +1,5 @@
 #include <proc.h>
+#include <sbi.h>
 #include <kmalloc.h>
 #include <string.h>
 #include <sync.h>
@@ -446,6 +447,8 @@ init_main(void *arg) {
     assert(nr_free_pages_store == nr_free_pages());
     assert(kernel_allocated_store == kallocated());
     cprintf("init check memory pass.\n");
+    // 2412634：实验负载已全部回收，正常结束模拟器运行。
+    sbi_shutdown();
     return 0;
 }
 
@@ -821,9 +824,11 @@ do_execve(const char *name, size_t len, unsigned char *binary, size_t size) {
         current->pgdir = boot_pgdir_pa;
         current->mm = NULL;
 
-        exit_mmap(mm);
-        put_pgdir(mm);
-        mm_destroy(mm);
+        if (mm_count_dec(mm) == 0) {
+            exit_mmap(mm);
+            put_pgdir(mm);
+            mm_destroy(mm);
+        }
     }
 
     int ret = load_icode(binary, size);
@@ -939,6 +944,7 @@ load_icode(unsigned char *binary, size_t size) {
         }
     }
 
+    mm_count_inc(mm);
     current->mm = mm;
     current->pgdir = PADDR(mm->pgdir);
     write_csr(satp, 0x8000000000000000 |
@@ -964,3 +970,31 @@ bad_mm:
 
 
 
+void cpu_idle(void) {
+    while (1) {
+        if (current->need_resched) {
+            schedule();
+        }
+    }
+}
+/* proc_run - 在关中断临界区内切换 current、Sv39 页表和执行上下文 */
+void proc_run(struct proc_struct *proc) {
+    if (proc == current) {
+        return;
+    }
+
+    assert(proc->state == PROC_RUNNABLE);
+
+    bool intr_flag;
+    struct proc_struct *prev = current;
+    struct proc_struct *next = proc;
+    local_intr_save(intr_flag);
+    {
+        current = next;
+        write_csr(satp,
+                  0x8000000000000000 | (next->pgdir >> RISCV_PGSHIFT));
+        flush_tlb();
+        switch_to(&(prev->context), &(next->context));
+    }
+    local_intr_restore(intr_flag);
+}

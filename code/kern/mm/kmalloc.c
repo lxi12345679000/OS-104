@@ -172,7 +172,8 @@ static void slob_free(void *block, int size)
 		if (cur >= cur->next && (b > cur || b < cur->next))
 			break;
 
-	if (b + b->units == cur->next)
+	if (b + b->units == cur->next &&
+	    ROUNDDOWN((uintptr_t)b, PAGE_SIZE) == ROUNDDOWN((uintptr_t)cur->next, PAGE_SIZE))
 	{
 		b->units += cur->next->units;
 		b->next = cur->next->next;
@@ -180,16 +181,29 @@ static void slob_free(void *block, int size)
 	else
 		b->next = cur->next;
 
-	if (cur + cur->units == b)
+	/* 2412634：只在同一物理页内合并，整页空闲后归还 PMM。 */
+	if (cur + cur->units == b &&
+	    ROUNDDOWN((uintptr_t)cur, PAGE_SIZE) == ROUNDDOWN((uintptr_t)b, PAGE_SIZE))
 	{
 		cur->units += b->units;
 		cur->next = b->next;
+		b = cur;
 	}
 	else
 		cur->next = b;
 
+	/* size == PAGE_SIZE 是新页首次加入 arena，供当前分配使用。 */
+	if (size != PAGE_SIZE && b->units == SLOB_UNITS(PAGE_SIZE))
+	{
+		while (cur->next != b)
+			cur = cur->next;
+		cur->next = b->next;
+		slobfree = cur;
+		spin_unlock_irqrestore(&slob_lock, flags);
+		__slob_free_pages((unsigned long)b, 0);
+		return;
+	}
 	slobfree = cur;
-
 	spin_unlock_irqrestore(&slob_lock, flags);
 }
 
